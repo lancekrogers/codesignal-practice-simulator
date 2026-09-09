@@ -1,0 +1,19 @@
+{
+  "name": "codesignal-practice-simulator-webui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Offline browser assets for the practice simulator",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "recover": "node build.mjs --recover-only",
+    "check": "node --check check.mjs && node check.mjs",
+    "check-assets": "python3 ../scripts/check_assets.py",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "esbuild": "0.28.2",
+    "monaco-editor": "0.56.0"
+  }
+}

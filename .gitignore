@@ -12,12 +12,28 @@ __pycache__/
 build/
 dist/
 
+# Web UI installs, browser state, and temporary output
+webui/node_modules/
+webui/.cache/
+webui/.playwright/
+webui/playwright-report/
+webui/test-results/
+webui/.tmp/
+
 # Test and tool artifacts
 .pytest_cache/
 .mypy_cache/
 .coverage
 htmlcov/
+/.playwright-cli/
+/playwright-report/
+/test-results/
 
 # Atomic temporary siblings
 *.tmp
 *.tmp-*
+.static.publish.lock
+.static.publish.lock.reclaimer
+.static.publish.json
+.static.previous/
+.static.stage-*/

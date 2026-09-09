@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import secrets
 import socket
 import threading
@@ -24,6 +25,19 @@ BrowserOpener = Callable[[str], object]
 ApplicationFactory = Callable[[Path], RuntimeApplication]
 _TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{43,}\Z")
 _REQUEST_TIMEOUT_SECONDS = 1.0
+_EXPECTED_CLIENT_DISCONNECTS = (
+    BrokenPipeError,
+    ConnectionResetError,
+    ConnectionAbortedError,
+)
+_EXPECTED_CLIENT_DISCONNECT_ERRNOS = frozenset(
+    {
+        errno.EPIPE,
+        errno.ECONNRESET,
+        errno.ECONNABORTED,
+        errno.ENOTCONN,
+    }
+)
 _PERMISSIONS_POLICY = (
     "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), "
     "bluetooth=(), camera=(), clipboard-read=(), clipboard-write=(), "
@@ -222,16 +236,26 @@ class _SimulatorHTTPServer(ThreadingHTTPServer):
         for connection in connections:
             try:
                 connection.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
+            except OSError as error:
+                if not _is_expected_client_disconnect(error):
+                    raise
             try:
                 connection.close()
-            except OSError:
-                pass
+            except OSError as error:
+                if not _is_expected_client_disconnect(error):
+                    raise
 
 
 class _RequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except OSError as error:
+            if not _is_expected_client_disconnect(error):
+                raise
+            self.close_connection = True
 
     def setup(self) -> None:
         super().setup()
@@ -243,8 +267,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
     def finish(self) -> None:
         try:
             super().finish()
-        except OSError:
-            pass
+        except OSError as error:
+            if not _is_expected_client_disconnect(error):
+                raise
         finally:
             server = self.server
             assert isinstance(server, _SimulatorHTTPServer)
@@ -296,14 +321,16 @@ class _RequestHandler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             response = failure(500, "internal_error", "response could not be serialized")
             body = encode(response)
-        self.send_response(response.status)
-        self._send_headers(response, len(body))
-        self.end_headers()
-        if not head:
-            try:
+        try:
+            self.send_response(response.status)
+            self._send_headers(response, len(body))
+            self.end_headers()
+            if not head:
                 self.wfile.write(body)
-            except OSError:
-                self.close_connection = True
+        except OSError as error:
+            if not _is_expected_client_disconnect(error):
+                raise
+            self.close_connection = True
 
     def _send_headers(self, response: HttpResponse, body_length: int) -> None:
         """Send managed headers once and preserve validated static headers."""
@@ -343,9 +370,11 @@ class _RequestHandler(BaseHTTPRequestHandler):
         if canonical_path in {"/", "/index.html"}:
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; script-src 'self'; style-src 'self'; "
+                "default-src 'self'; script-src 'self'; "
+                "style-src 'self' 'unsafe-inline'; font-src 'self' data:; "
                 "connect-src 'self'; img-src 'self' data:; object-src 'none'; "
-                "base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+                "worker-src 'self'; child-src 'self'; base-uri 'none'; "
+                "frame-ancestors 'none'; form-action 'none'",
             )
 
     def send_error(
@@ -366,6 +395,12 @@ class _RequestHandler(BaseHTTPRequestHandler):
 
     def log_message(self, *_args: object) -> None:
         return
+
+
+def _is_expected_client_disconnect(error: OSError) -> bool:
+    return isinstance(error, _EXPECTED_CLIENT_DISCONNECTS) or (
+        error.errno in _EXPECTED_CLIENT_DISCONNECT_ERRNOS
+    )
 
 
 __all__ = [

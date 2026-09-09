@@ -1,0 +1,33 @@
+{
+  "entry_points": [
+    "monaco-editor"
+  ],
+  "packages": {
+    "dompurify": [
+      {
+        "source": "LICENSE",
+        "snapshot": "dompurify.Apache-2.0.txt"
+      },
+      {
+        "source": "LICENSE-MPL",
+        "snapshot": "dompurify.MPL-2.0.txt"
+      }
+    ],
+    "marked": [
+      {
+        "source": "LICENSE.md",
+        "snapshot": "marked.MIT.txt"
+      }
+    ],
+    "monaco-editor": [
+      {
+        "source": "LICENSE",
+        "snapshot": "monaco-editor.MIT.txt"
+      },
+      {
+        "source": "ThirdPartyNotices.txt",
+        "snapshot": "monaco-editor.ThirdPartyNotices.txt"
+      }
+    ]
+  }
+}

@@ -18,7 +18,7 @@ from ..errors import (
     InvalidInputError,
     SessionUnavailableError,
 )
-from .resources import asset_names, read_asset
+from .resources import read_asset
 from .responses import (
     HttpResponse,
     evaluation_document,
@@ -94,9 +94,12 @@ class RouteHandler:
         if query:
             return failure(404, "not_found", "resource is not available")
         name = "index.html" if path == "/" else path.removeprefix("/")
-        if name not in asset_names() or "/" in name:
+        if "/" in name:
             return failure(404, "not_found", "resource is not available")
-        asset = read_asset(name)
+        try:
+            asset = read_asset(name)
+        except FileNotFoundError:
+            return failure(404, "not_found", "resource is not available")
         return HttpResponse(
             200,
             {},

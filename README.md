@@ -139,6 +139,31 @@ Run the hermetic editable-process verification directly with:
 python3 -m unittest tests.test_end_to_end -v
 ```
 
+## Browser asset verification
+
+The generated static package can be checked without Node:
+
+```sh
+python3 scripts/check_assets.py
+```
+
+The bounded release checks use temporary lockfile installs and distributions.
+The optional `test` extra contains only the Python build tool used for sdist
+inspection; it is not a runtime dependency:
+
+```sh
+python3 -m unittest tests.test_asset_verification -v
+python3 scripts/run_packaged_browser.py
+```
+
+Publication uses strict directory fsync on POSIX. Windows retains atomic
+renames but treats its documented unsupported directory-open/fsync errors as
+best effort, so it does not provide the same post-rename power-loss guarantee.
+
+Successful browser runs retain no screenshots or traces. The Playwright
+policy denies every request except the loopback server origin and verifies the
+installed wheel's manifest, workers, styles, and font responses.
+
 ## Post-attempt learning and compatibility
 
 After submission or an explicit end to timed work, you may opt into

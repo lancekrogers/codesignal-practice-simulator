@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import http.client
 import json
@@ -10,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import Mock, patch
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -18,7 +20,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codesignal_practice_simulator.application import RuntimeApplication
 from codesignal_practice_simulator.models import LevelResult, ScoreSummary
 from codesignal_practice_simulator.prompts import MAX_PROMPT_BYTES
-from codesignal_practice_simulator.web.server import WebServer, WebServerConfig
+from codesignal_practice_simulator.web.resources import asset_names
+from codesignal_practice_simulator.web.responses import HttpResponse
+from codesignal_practice_simulator.web.server import (
+    WebServer,
+    WebServerConfig,
+    _RequestHandler,
+)
 from codesignal_practice_simulator.workspace import ValidatedFixtureCache
 
 TEST_TOKEN = "test-capability-" + "a" * 32
@@ -145,13 +153,32 @@ class WebServerTests(unittest.TestCase):
         status, _headers, _body = self.request("GET", "/app.js?path=../secret", token=None)
         self.assertEqual(status, 404)
 
+    def test_static_route_maps_one_read_missing_asset_to_not_found(self) -> None:
+        with patch(
+            "codesignal_practice_simulator.web.routes.read_asset",
+            side_effect=FileNotFoundError("missing"),
+        ) as read:
+            status, _headers, document = self.request(
+                "GET",
+                "/index.html",
+                token=None,
+            )
+        self.assertEqual(status, 404)
+        self.assertFalse(document["ok"])
+        self.assertEqual(read.call_count, 1)
+
     def test_static_mime_cache_nosniff_and_head_parity(self) -> None:
+        font_name = next(name for name in asset_names() if name.endswith(".ttf"))
         expected = {
-            "/": "text/html; charset=utf-8",
-            "/app.js": "text/javascript; charset=utf-8",
-            "/styles.css": "text/css; charset=utf-8",
+            "/": ("text/html; charset=utf-8", "no-store"),
+            "/app.js": ("text/javascript; charset=utf-8", "no-store"),
+            "/styles.css": ("text/css; charset=utf-8", "no-store"),
+            f"/{font_name}": (
+                "font/ttf",
+                "public, max-age=31536000, immutable",
+            ),
         }
-        for path, media_type in expected.items():
+        for path, (media_type, cache_control) in expected.items():
             responses = {}
             for method in ("GET", "HEAD"):
                 connection = http.client.HTTPConnection(
@@ -163,7 +190,9 @@ class WebServerTests(unittest.TestCase):
                 responses[method] = response
                 self.assertEqual(response.status, 200)
                 self.assertEqual(response.headers.get_all("Content-Type"), [media_type])
-                self.assertEqual(response.headers.get_all("Cache-Control"), ["no-store"])
+                self.assertEqual(
+                    response.headers.get_all("Cache-Control"), [cache_control]
+                )
                 self.assertEqual(
                     response.headers.get_all("X-Content-Type-Options"),
                     ["nosniff"],
@@ -391,6 +420,24 @@ class WebServerTests(unittest.TestCase):
         self.server.stop()
         self.assertLess(time.monotonic() - started, 2)
         connection.close()
+
+    def test_expected_client_disconnects_are_suppressed_but_other_oserrors_raise(self) -> None:
+        for error in (
+            BrokenPipeError(),
+            ConnectionResetError(),
+            OSError(errno.EPIPE, "broken pipe"),
+        ):
+            handler = object.__new__(_RequestHandler)
+            handler.close_connection = False
+            handler.send_response = Mock(side_effect=error)
+            handler._send(HttpResponse(200, {}, {}), head=False)
+            self.assertTrue(handler.close_connection)
+
+        handler = object.__new__(_RequestHandler)
+        handler.close_connection = False
+        handler.send_response = Mock(side_effect=OSError("unexpected socket failure"))
+        with self.assertRaisesRegex(OSError, "unexpected socket failure"):
+            handler._send(HttpResponse(200, {}, {}), head=False)
 
     def test_restart_rotates_capability_without_losing_selected_attempt(self) -> None:
         attempt_id, _etag = self.start_attempt()
