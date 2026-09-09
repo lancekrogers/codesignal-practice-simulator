@@ -1,0 +1,23 @@
+# Session attempts and fetched fixture cache
+attempts/
+.cache/codesignal-fixtures/
+
+# Python environments and artifacts
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Test and tool artifacts
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Atomic temporary siblings
+*.tmp
+*.tmp-*
