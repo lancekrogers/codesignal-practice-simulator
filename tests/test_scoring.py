@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
-import venv
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -467,7 +467,20 @@ while True:
         self.addCleanup(sentinel.unlink)
 
         environment = Path(self.temporary_directory.name) / "editable-environment"
-        venv.EnvBuilder(with_pip=False).create(environment)
+        candidates = (sys.executable, shutil.which("python3.10"), shutil.which("python3.11"))
+        for base_interpreter in dict.fromkeys(
+            candidate for candidate in candidates if candidate is not None
+        ):
+            created = subprocess.run(
+                [base_interpreter, "-m", "venv", "--without-pip", str(environment)],
+                capture_output=True,
+                check=False,
+            )
+            if created.returncode == 0:
+                break
+            shutil.rmtree(environment, ignore_errors=True)
+        else:
+            self.fail("a Python interpreter able to create an isolated venv is required")
         interpreter = environment / "bin" / "python"
         site_packages = Path(
             subprocess.check_output(

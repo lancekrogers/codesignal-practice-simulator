@@ -3,6 +3,7 @@
 # Run the maintained simulator suite and reject whitespace errors.
 verify:
     cd {{justfile_directory()}} && {{python}} -m unittest discover -s tests -v
+    cd {{justfile_directory()}} && {{python}} -m unittest tests.test_end_to_end -v
     cd {{justfile_directory()}} && git diff --check HEAD
 
 # Deprecated post-attempt compatibility check against the fetched bundled test.

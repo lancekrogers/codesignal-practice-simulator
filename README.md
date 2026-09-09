@@ -120,6 +120,12 @@ used by the timed shortcuts. The `test-compat`, `study-spec`, `study-stages`,
 and `study-check` recipes are post-attempt educational or deprecated
 compatibility support, not timed commands.
 
+Run the hermetic editable-process verification directly with:
+
+```sh
+python3 -m unittest tests.test_end_to_end -v
+```
+
 ## Post-attempt learning and compatibility
 
 After submission or an explicit end to timed work, you may opt into
