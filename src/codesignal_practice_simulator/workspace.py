@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from .assessments import (
+    AssessmentRegistry,
+    DEFAULT_ASSESSMENT_REGISTRY,
+    FILE_STORAGE,
+)
 from .errors import (
     FixtureSetupRequiredError,
     InvalidInputError,
@@ -16,19 +21,14 @@ from .errors import (
 )
 from .filesystem import Filesystem, LocalFilesystem
 from .models import ACTIVE_POINTER_SCHEMA_VERSION, ActivePointer, SessionState
+from .rendering import refresh_status
 from .persistence import ACTIVE_FILENAME, Persistence, initial_event
+from .scoring import install_attempt_runner
 
 
 ATTEMPTS_DIRECTORY = "attempts"
 CREATION_MARKER = ".creation-owner.json"
-CACHE_INPUTS = (
-    "level1.md",
-    "level2.md",
-    "level3.md",
-    "level4.md",
-    "simulation.py",
-    "test_simulation.py",
-)
+CACHE_INPUTS = FILE_STORAGE.copied_filenames
 _CACHE_README = "vendor-readme.md"
 _MARKER_SCHEMA_VERSION = "attempt-creation/v1"
 _EXPECTED_CACHE_PATHS = frozenset(
@@ -37,16 +37,24 @@ _EXPECTED_CACHE_PATHS = frozenset(
 
 _COACHING = """# Coaching
 
-Use this file only for candidate-approved goals, questions, and high-level hints.
+Candidate-owned, non-executable collaboration notes.
+
+Use this file for candidate-approved goals, questions, and high-level hints.
+Do not put candidate code, test output, or answers here.
 """
 _AGENTS = """# Live attempt instructions
 
 Read `codesignal-sim context` or `STATUS.md` before acting.
 
-- Edit `COACHING.md` only unless the candidate explicitly asks for a named file.
-- Do not edit `session.json`, `events.jsonl`, locks, `STATUS.md`, or `active.json`.
-- Do not use assessment, solution, study, or walkthrough material as hints during
-  an active attempt.
+- Edit `COACHING.md` by default. It is candidate-owned, non-executable text.
+- Read or edit candidate code only after an explicit candidate request.
+- Never manually edit structured or generated state: `session.json`,
+  `events.jsonl`, locks, `active.json`, or `STATUS.md`.
+- During timed work, never use assessment reference/solution/stages/walkthrough/
+  study answers as hints or expose their contents.
+
+This is operational policy, not a security sandbox: a same-user process can
+bypass it.
 """
 
 
@@ -152,11 +160,13 @@ class WorkspaceManager:
         *,
         filesystem: Filesystem | None = None,
         persistence: Persistence | None = None,
+        registry: AssessmentRegistry = DEFAULT_ASSESSMENT_REGISTRY,
     ) -> None:
         self.workspace_root = workspace_root.resolve()
         self.cache = cache
         self.filesystem = filesystem or LocalFilesystem()
         self.persistence = persistence or Persistence(self.filesystem)
+        self.registry = registry
 
     @classmethod
     def for_project(
@@ -178,6 +188,13 @@ class WorkspaceManager:
         self, state: SessionState, *, interrupt_after_publish: bool = False
     ) -> Path:
         """Build an attempt in staging, publish it, then atomically select it."""
+        definition = self.registry.require(state.assessment.assessment_id)
+        if state.assessment != definition.metadata:
+            raise InvalidInputError(
+                "assessment metadata does not match its registry entry"
+            )
+        if not definition.supports_profile(state.profile.profile_id):
+            raise InvalidInputError("assessment does not support the selected profile")
         self.cache.validate(self.filesystem)
         attempts = self.attempts_directory
         self.filesystem.mkdir(attempts, parents=True, exist_ok=True)
@@ -236,27 +253,38 @@ class WorkspaceManager:
         return attempt
 
     def _populate_staging(self, staging: Path, state: SessionState, token: str) -> None:
-        source_directory = self.cache.root / "assessment" / "file_storage"
+        definition = self.registry.require(state.assessment.assessment_id)
+        source_directory = self.cache.root.joinpath(
+            *definition.cache_directory.split("/")
+        )
         with self.persistence.attempt_lock(staging):
-            for filename in CACHE_INPUTS:
+            for filename in definition.copied_filenames:
                 self.filesystem.copyfile(source_directory / filename, staging / filename)
+            install_attempt_runner(
+                staging,
+                self.filesystem.write_bytes,
+                self.filesystem.flush_file,
+                self.filesystem.mkdir,
+            )
 
             self._write_flushed(staging / "COACHING.md", _COACHING)
             self._write_flushed(staging / "AGENTS.md", _AGENTS)
-            self._write_flushed(
-                staging / "STATUS.md",
-                f"# Attempt status\n\nAttempt: {state.attempt_id}\nStatus: {state.status}\n",
-            )
             self.persistence.write_session_locked(staging, state)
+            event = initial_event(state)
             self._write_flushed(
                 staging / "events.jsonl",
                 json.dumps(
-                    initial_event(state).to_dict(),
+                    event.to_dict(),
                     ensure_ascii=False,
                     sort_keys=True,
                     separators=(",", ":"),
                 )
                 + "\n",
+            )
+            refresh_status(
+                staging,
+                self.persistence,
+                filesystem=self.filesystem,
             )
             self._write_flushed(
                 staging / CREATION_MARKER,

@@ -27,3 +27,12 @@ preserves the exact upstream spelling.
 
 Only these seven files may be fetched at runtime, atomically into the ignored
 fixture cache. No upstream/vendor byte may be tracked or copied into PROJECT.
+
+## Level 4 profiles
+
+The fetched Level-4 compatibility profile is evaluated only from the copied
+candidate source and copied bundled test. Its `ROLLBACK` expectation is
+log-only, so it is useful for reproducing the fetched test behavior but is not
+the prose specification. The prose-correct profile restores the file-storage
+state at the requested time; it belongs to the original reference and
+post-attempt study material, never to a live fetch-only scoring input.
