@@ -224,6 +224,7 @@ class WorkspaceManager:
         self.filesystem.mkdir(attempts, parents=True, exist_ok=True)
         with self.persistence.workspace_lock(attempts):
             self._reconcile_locked(attempts)
+            prior_pointer = self.persistence.read_active_pointer(attempts)
             destination = attempts / state.attempt_id
             if destination.exists() or destination.is_symlink():
                 raise InvalidInputError(f"attempt already exists: {state.attempt_id}")
@@ -231,13 +232,18 @@ class WorkspaceManager:
             token = str(uuid4())
             staging = attempts / f".{state.attempt_id}.staging-{token}"
             published = False
+            pointer_publish_started = False
             try:
                 self.filesystem.mkdir(staging)
                 self._populate_staging(staging, state, token)
-                self.filesystem.replace(staging, destination)
+                # A filesystem operation can report failure after publishing.
+                # Mark this transaction-owned destination first so rollback
+                # handles either outcome safely.
                 published = True
+                self.filesystem.replace(staging, destination)
                 if interrupt_after_publish:
                     raise PublishInterrupted("attempt published before active pointer update")
+                pointer_publish_started = True
                 self.persistence.write_active_pointer_locked(
                     attempts,
                     ActivePointer(ACTIVE_POINTER_SCHEMA_VERSION, state.attempt_id),
@@ -247,7 +253,17 @@ class WorkspaceManager:
             except PublishInterrupted:
                 raise
             except Exception:
-                self._rollback_new_attempt(staging, destination if published else None)
+                restored_prior_pointer = True
+                if pointer_publish_started:
+                    restored_prior_pointer = self._restore_active_pointer_best_effort(
+                        attempts, prior_pointer
+                    )
+                rollback_published = (
+                    destination
+                    if published and (not pointer_publish_started or restored_prior_pointer)
+                    else None
+                )
+                self._rollback_new_attempt(staging, rollback_published)
                 raise
 
     def reconcile(self) -> list[str]:
@@ -444,6 +460,25 @@ class WorkspaceManager:
                     self.filesystem.remove_tree(path)
             except OSError:
                 pass
+
+    def _restore_active_pointer_best_effort(
+        self, attempts: Path, prior_pointer: ActivePointer | None
+    ) -> bool:
+        """Restore and verify the prior selection after pointer publication fails."""
+        try:
+            if prior_pointer is None:
+                active_pointer = attempts / ACTIVE_FILENAME
+                if active_pointer.exists() or active_pointer.is_symlink():
+                    self.filesystem.unlink(active_pointer)
+                    self.filesystem.flush_directory(attempts)
+            else:
+                self.persistence.write_active_pointer_locked(attempts, prior_pointer)
+        except OSError:
+            return False
+        try:
+            return self.persistence.read_active_pointer(attempts) == prior_pointer
+        except SessionCorruptError:
+            return False
 
     def _remove_marker_best_effort(self, attempt: Path) -> None:
         try:

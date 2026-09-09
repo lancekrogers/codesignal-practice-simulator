@@ -123,9 +123,78 @@ class RecordingFilesystem(LocalFilesystem):
         self._record("flush_file")
         super().flush_file(path)
 
+    def flush_directory(self, path: Path) -> None:
+        self._record("flush_directory")
+        super().flush_directory(path)
+
     def replace(self, source: Path, destination: Path) -> None:
         self._record("replace")
         super().replace(source, destination)
+
+
+class PublishThenReportFilesystem(LocalFilesystem):
+    """Report a failure after publishing one transaction-owned attempt."""
+
+    def __init__(self, attempt_id: str) -> None:
+        self.attempt_id = attempt_id
+        self.failed = False
+
+    def replace(self, source: Path, destination: Path) -> None:
+        super().replace(source, destination)
+        if destination.name == self.attempt_id and not self.failed:
+            self.failed = True
+            raise OSError("injected publish failure after replacement")
+
+
+class PointerFlushThenReportFilesystem(LocalFilesystem):
+    """Report one pointer-directory flush failure after replacement."""
+
+    def __init__(self, attempts: Path) -> None:
+        self.attempts = attempts.resolve()
+        self.failed = False
+
+    def flush_directory(self, path: Path) -> None:
+        super().flush_directory(path)
+        if path.resolve() == self.attempts and not self.failed:
+            self.failed = True
+            raise OSError("injected pointer flush failure after replacement")
+
+
+class PersistentPointerFailureFilesystem(LocalFilesystem):
+    """Fail pointer publication and restoration with either durable outcome."""
+
+    def __init__(self, attempts: Path, *, final_pointer: str) -> None:
+        self.attempts = attempts.resolve()
+        self.final_pointer = final_pointer
+        self.pointer_temp_writes = 0
+
+    def write_bytes(self, path: Path, data: bytes) -> None:
+        if self._is_pointer_temporary(path):
+            self.pointer_temp_writes += 1
+            if self.final_pointer == "new" and self.pointer_temp_writes > 1:
+                raise OSError("injected pointer restore write failure")
+        super().write_bytes(path, data)
+
+    def flush_directory(self, path: Path) -> None:
+        super().flush_directory(path)
+        if path.resolve() == self.attempts:
+            raise OSError("injected pointer flush failure after replacement")
+
+    def unlink(self, path: Path) -> None:
+        if (
+            self.final_pointer == "new"
+            and path.parent.resolve() == self.attempts
+            and path.name == "active.json"
+        ):
+            raise OSError("injected pointer restore unlink failure")
+        super().unlink(path)
+
+    def _is_pointer_temporary(self, path: Path) -> bool:
+        return (
+            path.parent.resolve() == self.attempts
+            and path.name.startswith(".active.json.")
+            and path.name.endswith(".tmp")
+        )
 
 
 class WorkspaceTests(unittest.TestCase):
@@ -194,6 +263,31 @@ class WorkspaceTests(unittest.TestCase):
             WorkspaceManager(root, cache).create_attempt(session(str(uuid4())))
 
         self.assertFalse((root / "attempts").exists())
+
+    def test_each_cache_record_hash_is_checked_before_workspace_mutation(self) -> None:
+        """Every declared cache input must match before an attempt path exists."""
+        cache_paths = (
+            "vendor-readme.md",
+            *(f"assessment/file_storage/{name}" for name in CACHE_INPUTS),
+        )
+        self.assertEqual(len(cache_paths), 7)
+        for relative_path in cache_paths:
+            with self.subTest(relative_path=relative_path):
+                temporary, root, cache = self._environment()
+                try:
+                    self.assertEqual(set(cache.hashes), set(cache_paths))
+                    cache_file = cache.root.joinpath(*relative_path.split("/"))
+                    cache_file.write_bytes(cache_file.read_bytes() + b"tampered\n")
+
+                    with self.assertRaisesRegex(
+                        FixtureSetupRequiredError,
+                        f"cache hash mismatch for {relative_path}",
+                    ):
+                        WorkspaceManager(root, cache).create_attempt(session(str(uuid4())))
+
+                    self.assertFalse((root / "attempts").exists())
+                finally:
+                    temporary.cleanup()
 
     def test_attempts_symlink_to_cache_is_rejected_without_cache_mutation(self) -> None:
         temporary, root, cache = self._environment()
@@ -284,6 +378,111 @@ class WorkspaceTests(unittest.TestCase):
                         )
                     finally:
                         case_temporary.cleanup()
+
+    def test_reported_after_publish_failure_rolls_back_the_owned_attempt(self) -> None:
+        temporary, root, cache = self._environment()
+        self.addCleanup(temporary.cleanup)
+        _manager, old = self._with_existing_attempt(root, cache)
+        attempts = root / "attempts"
+        pointer_before = (attempts / "active.json").read_bytes()
+        state = session(str(uuid4()))
+
+        with self.assertRaisesRegex(OSError, "publish failure after replacement"):
+            WorkspaceManager(
+                root, cache, filesystem=PublishThenReportFilesystem(state.attempt_id)
+            ).create_attempt(state)
+
+        self.assertFalse((attempts / state.attempt_id).exists())
+        self.assertTrue(old.exists())
+        self.assertEqual((attempts / "active.json").read_bytes(), pointer_before)
+
+    def test_reported_pointer_flush_failure_restores_the_prior_selection(self) -> None:
+        temporary, root, cache = self._environment()
+        self.addCleanup(temporary.cleanup)
+        _manager, old = self._with_existing_attempt(root, cache)
+        attempts = root / "attempts"
+        pointer_before = (attempts / "active.json").read_bytes()
+        state = session(str(uuid4()))
+
+        with self.assertRaisesRegex(OSError, "pointer flush failure after replacement"):
+            WorkspaceManager(
+                root, cache, filesystem=PointerFlushThenReportFilesystem(attempts)
+            ).create_attempt(state)
+
+        self.assertFalse((attempts / state.attempt_id).exists())
+        self.assertTrue(old.exists())
+        self.assertEqual((attempts / "active.json").read_bytes(), pointer_before)
+
+    def test_unverifiable_pointer_restore_leaves_marker_for_reconciliation(self) -> None:
+        for has_prior_pointer in (False, True):
+            for final_pointer in ("prior", "new"):
+                with self.subTest(
+                    has_prior_pointer=has_prior_pointer, final_pointer=final_pointer
+                ):
+                    temporary, root, cache = self._environment()
+                    try:
+                        if has_prior_pointer:
+                            _manager, old = self._with_existing_attempt(root, cache)
+                            old_before = tree_bytes(old)
+                        else:
+                            (root / "attempts").mkdir()
+                            old = None
+                            old_before = None
+                        attempts = root / "attempts"
+                        cache_before = tree_bytes(cache.root)
+                        state = session(str(uuid4()))
+                        failing = WorkspaceManager(
+                            root,
+                            cache,
+                            filesystem=PersistentPointerFailureFilesystem(
+                                attempts, final_pointer=final_pointer
+                            ),
+                        )
+
+                        with self.assertRaisesRegex(OSError, "pointer flush failure"):
+                            failing.create_attempt(state)
+
+                        published = attempts / state.attempt_id
+                        self.assertTrue(published.is_dir())
+                        self.assertTrue((published / CREATION_MARKER).is_file())
+                        pointer = failing.persistence.read_active_pointer(attempts)
+                        expected_pointer = (
+                            state.attempt_id
+                            if final_pointer == "new"
+                            else None if old is None else old.name
+                        )
+                        self.assertEqual(
+                            None if pointer is None else pointer.attempt_id,
+                            expected_pointer,
+                        )
+
+                        reconciled = WorkspaceManager(root, cache).reconcile()
+
+                        self.assertEqual(tree_bytes(cache.root), cache_before)
+                        if old is not None:
+                            self.assertEqual(tree_bytes(old), old_before)
+                        if final_pointer == "prior":
+                            self.assertEqual(reconciled, [state.attempt_id])
+                            self.assertFalse(published.exists())
+                            restored = WorkspaceManager(
+                                root, cache
+                            ).persistence.read_active_pointer(attempts)
+                            self.assertEqual(
+                                None if restored is None else restored.attempt_id,
+                                expected_pointer,
+                            )
+                        else:
+                            self.assertEqual(reconciled, [])
+                            self.assertTrue(published.is_dir())
+                            self.assertFalse((published / CREATION_MARKER).exists())
+                            self.assertEqual(
+                                WorkspaceManager(root, cache)
+                                .persistence.read_active_pointer(attempts)
+                                .attempt_id,
+                                state.attempt_id,
+                            )
+                    finally:
+                        temporary.cleanup()
 
     def test_publish_before_pointer_interruption_reconciles_only_owned_attempt(self) -> None:
         temporary, root, cache = self._environment()

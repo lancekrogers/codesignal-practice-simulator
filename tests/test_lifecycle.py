@@ -210,6 +210,20 @@ class LifecycleTests(unittest.TestCase):
             [("started", 0), ("expired", 1)],
         )
 
+    def test_overdue_resume_records_expiry_then_rejects_once(self) -> None:
+        state, attempt = self.start()
+        self.clock.value = state.deadline_at
+
+        with self.assertRaisesRegex(IllegalLifecycleError, "cannot resume"):
+            self.service.resume()
+
+        self.assertEqual(self.manager.persistence.read_session(attempt).status, EXPIRED)
+        self.assertEqual(
+            [(event.name, event.revision) for event in self.manager.persistence.read_events(attempt)],
+            [("started", 0), ("expired", 1)],
+        )
+        self.assertEqual(self.scorer.calls, [])
+
     def test_record_test_result_updates_active_state_under_one_revision(self) -> None:
         state, attempt = self.start()
 
@@ -222,6 +236,23 @@ class LifecycleTests(unittest.TestCase):
             [event.name for event in self.manager.persistence.read_events(attempt)],
             ["started", "tested"],
         )
+
+    def test_transition_repairs_a_valid_unterminated_current_revision_event(self) -> None:
+        state, attempt = self.start()
+        events_path = attempt / "events.jsonl"
+        events_path.write_bytes(events_path.read_bytes().rstrip(b"\n"))
+
+        recorded = self.service.record_test_result(score())
+
+        self.assertEqual(recorded.revision, state.revision + 1)
+        self.assertEqual(
+            [
+                (event.name, event.revision)
+                for event in self.manager.persistence.read_events(attempt)
+            ],
+            [("started", 0), ("tested", 1)],
+        )
+        self.assertTrue(events_path.read_bytes().endswith(b"\n"))
 
     def test_test_uses_a_short_selection_lock_then_records_result(self) -> None:
         state, attempt = self.start()
@@ -327,6 +358,18 @@ class LifecycleTests(unittest.TestCase):
 
         self.assertEqual(durable_bytes(attempt), before)
         self.assertEqual(self.scorer.calls, scorer_calls)
+
+    def test_status_and_time_on_submitted_attempt_are_byte_identical(self) -> None:
+        _state, attempt = self.start()
+        submitted = self.service.submit()
+        before = durable_bytes(attempt)
+
+        self.assertEqual(self.service.status(), submitted.state)
+        observation = self.service.time()
+
+        self.assertEqual(observation.state, submitted.state)
+        self.assertEqual(durable_bytes(attempt), before)
+        self.assertEqual(self.scorer.calls, [attempt])
 
     def test_submit_active_and_repeat_submit_returns_the_stored_result_without_writes(self) -> None:
         state, attempt = self.start()

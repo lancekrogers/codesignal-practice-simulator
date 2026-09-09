@@ -220,6 +220,22 @@ class PersistenceTests(unittest.TestCase):
         with self.assertRaisesRegex(SessionCorruptError, "duplicate event ID"):
             self.persistence.read_events(self.attempt)
 
+    def test_locked_append_rejects_an_incoming_duplicate_id_without_rewriting(self) -> None:
+        existing = initial_event(self.session)
+        incoming = replace(existing, name="tested")
+        events = self.attempt / "events.jsonl"
+
+        for delimiter in (b"\n", b""):
+            with self.subTest(unterminated=not delimiter):
+                before = json.dumps(existing.to_dict()).encode("utf-8") + delimiter
+                events.write_bytes(before)
+
+                with self.persistence.attempt_lock(self.attempt):
+                    with self.assertRaisesRegex(SessionCorruptError, "duplicate event ID"):
+                        self.persistence.append_event_locked(self.attempt, incoming)
+
+                self.assertEqual(events.read_bytes(), before)
+
     def test_recovery_appends_one_event_for_a_missing_authoritative_revision(self) -> None:
         revised = state(self.attempt.name, revision=1)
         self.persistence.write_session(self.attempt, revised)
@@ -233,6 +249,34 @@ class PersistenceTests(unittest.TestCase):
         before = (self.attempt / "events.jsonl").read_bytes()
         self.assertIsNone(self.persistence.recover_missing_state_event(self.attempt, clock))
         self.assertEqual((self.attempt / "events.jsonl").read_bytes(), before)
+
+    def test_recovery_rewrites_a_valid_unterminated_event_before_appending(self) -> None:
+        revised = state(self.attempt.name, revision=1)
+        self.persistence.write_session(self.attempt, revised)
+        (self.attempt / "events.jsonl").write_bytes(
+            json.dumps(initial_event(self.session).to_dict()).encode("utf-8")
+        )
+        clock: Clock = FixedClock(datetime(2026, 9, 8, 20, tzinfo=timezone.utc))
+
+        recovered = self.persistence.recover_missing_state_event(self.attempt, clock)
+
+        self.assertIsNotNone(recovered)
+        self.assertEqual(
+            [(event.name, event.revision) for event in self.persistence.read_events(self.attempt)],
+            [("started", 0), ("recovered", 1)],
+        )
+        self.assertTrue((self.attempt / "events.jsonl").read_bytes().endswith(b"\n"))
+
+    def test_ordinary_append_rejects_a_malformed_incomplete_tail_without_rewriting_it(self) -> None:
+        events = self.attempt / "events.jsonl"
+        before = events.read_bytes() + b'{"unrelated":'
+        events.write_bytes(before)
+
+        with self.assertRaisesRegex(SessionCorruptError, "incomplete malformed tail"):
+            self.persistence.append_event(self.attempt, initial_event(self.session))
+
+        self.assertEqual(events.read_bytes(), before)
+        self.assertEqual(len(self.persistence.read_events(self.attempt)), 1)
 
     def test_locked_recovery_does_not_reacquire_the_attempt_lock(self) -> None:
         revised = state(self.attempt.name, revision=1)

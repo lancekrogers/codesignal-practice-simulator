@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -126,12 +128,34 @@ def write_complete_source(root: Path) -> None:
         path.write_bytes(synthetic_bytes(upstream_path))
 
 
+def hermetic_subprocess_environment(root: Path) -> dict[str, str]:
+    """Isolate temporary repositories from host Git and Python configuration."""
+    home = root / "home"
+    home.mkdir(exist_ok=True)
+    environment = os.environ.copy()
+    for name in tuple(environment):
+        if name.startswith(("GIT_", "PYTHON")):
+            environment.pop(name)
+    environment.update(
+        {
+            "HOME": str(home),
+            "XDG_CONFIG_HOME": str(root / "xdg-config"),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+    )
+    return environment
+
+
 def git(repository: Path, *arguments: str) -> None:
     """Run Git deterministically in a temporary repository."""
     subprocess.run(
         ("git", "-C", str(repository), *arguments),
         check=True,
         capture_output=True,
+        env=hermetic_subprocess_environment(repository.parent),
     )
 
 
@@ -147,6 +171,32 @@ def initialize_repository(root: Path) -> tuple[Path, Path]:
     git(repository, "add", "safe.txt")
     git(repository, "commit", "--quiet", "-m", "safe initial state")
     return repository, manifest_path
+
+
+def install_git_boundary_hooks(repository: Path) -> None:
+    """Install the production wrappers with their local Python dependencies."""
+    for relative in (
+        ".githooks/pre-commit",
+        ".githooks/pre-push",
+        "scripts/fixture_contract.py",
+        "scripts/verify_manifest.py",
+    ):
+        source = PROJECT / relative
+        destination = repository / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+    git(repository, "config", "core.hooksPath", ".githooks")
+
+
+def git_result(repository: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    """Run Git without converting an expected hook rejection into an exception."""
+    return subprocess.run(
+        ("git", "-C", str(repository), *arguments),
+        text=True,
+        capture_output=True,
+        check=False,
+        env=hermetic_subprocess_environment(repository.parent),
+    )
 
 
 class FetchFixtureTests(unittest.TestCase):
@@ -267,6 +317,69 @@ class ManifestVerifierTests(unittest.TestCase):
 
             with self.assertRaisesRegex(FixtureError, "HEAD: forbidden vendor path"):
                 verify_git_boundary(manifest_path, read_manifest(manifest_path))
+
+    def test_installed_pre_commit_hook_rejects_a_staged_vendor_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repository, _manifest_path = initialize_repository(Path(temporary_directory))
+            install_git_boundary_hooks(repository)
+
+            safe = git_result(repository, "commit", "--allow-empty", "-m", "hook control")
+            self.assertEqual(safe.returncode, 0, safe.stderr)
+
+            (repository / "copy.txt").write_bytes(synthetic_bytes("README.md"))
+            git(repository, "add", "copy.txt")
+            rejected = git_result(repository, "commit", "-m", "known vendor hash")
+
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn(
+                "staged index: known vendor hash at copy.txt",
+                rejected.stdout + rejected.stderr,
+            )
+
+    def test_hook_tests_ignore_inherited_global_git_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            hostile_global = root / "hostile.gitconfig"
+            hostile_global.write_text("[commit]\n\tgpgSign = true\n", encoding="utf-8")
+            with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(hostile_global)}):
+                repository, _manifest_path = initialize_repository(root)
+                install_git_boundary_hooks(repository)
+
+                committed = git_result(
+                    repository, "commit", "--allow-empty", "-m", "hook control"
+                )
+
+            self.assertEqual(committed.returncode, 0, committed.stderr)
+
+    def test_installed_pre_push_hook_rejects_a_head_vendor_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            repository, _manifest_path = initialize_repository(root)
+            install_git_boundary_hooks(repository)
+            remote = root / "remote.git"
+            subprocess.run(
+                ("git", "init", "--bare", "--quiet", str(remote)),
+                check=True,
+                capture_output=True,
+                env=hermetic_subprocess_environment(root),
+            )
+            git(repository, "remote", "add", "origin", str(remote))
+
+            safe = git_result(repository, "push", "--quiet", "-u", "origin", "HEAD")
+            self.assertEqual(safe.returncode, 0, safe.stderr)
+
+            forbidden = repository / "synthetic" / "assessment" / "file_storage"
+            forbidden.mkdir(parents=True)
+            (forbidden / "level1.md").write_text("different bytes\n", encoding="utf-8")
+            git(repository, "add", "synthetic/assessment/file_storage/level1.md")
+            git(repository, "commit", "--quiet", "--no-verify", "-m", "known vendor path")
+            rejected = git_result(repository, "push", "--quiet", "origin", "HEAD")
+
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn(
+                "HEAD: forbidden vendor path synthetic/assessment/file_storage/level1.md",
+                rejected.stdout + rejected.stderr,
+            )
 
 
 class ScorecardFixtureTests(unittest.TestCase):

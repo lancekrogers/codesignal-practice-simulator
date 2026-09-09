@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from .clock import Clock
@@ -30,6 +31,7 @@ SUBMISSION_RECOVERY_FILENAME = ".submission-recovery.json"
 
 _PROCESS_LOCK = threading.Lock()
 _HELD_LOCKS: set[Path] = set()
+_EventLogTail = Literal["complete", "valid", "malformed"]
 
 
 def _json_bytes(value: object, *, newline: bool = True) -> bytes:
@@ -98,18 +100,24 @@ class Persistence:
 
     def read_events(self, attempt_directory: Path) -> list[EventRecord]:
         """Read strict JSONL, tolerating one syntactically incomplete final tail."""
-        events, _has_incomplete_tail = self._read_events(attempt_directory)
+        events, _tail = self._read_events(attempt_directory)
         return events
 
-    def _read_events(self, attempt_directory: Path) -> tuple[list[EventRecord], bool]:
+    def _read_events(
+        self, attempt_directory: Path, *, missing_is_empty: bool = False
+    ) -> tuple[list[EventRecord], _EventLogTail]:
         """Read events and report a final tail that must be rewritten before append."""
         path = attempt_directory / EVENTS_FILENAME
         try:
             raw = self.filesystem.read_bytes(path)
+        except FileNotFoundError:
+            if missing_is_empty:
+                return [], "complete"
+            raise SessionUnavailableError(f"cannot read events: {path}") from None
         except OSError as error:
             raise SessionUnavailableError(f"cannot read events: {path}") from error
         if not raw:
-            return [], False
+            return [], "complete"
 
         records: list[EventRecord] = []
         event_ids: set[str] = set()
@@ -123,7 +131,7 @@ class Persistence:
                 decoded = json.loads(line.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as error:
                 if index == len(lines) - 1 and not complete:
-                    return records, True
+                    return records, "malformed"
                 raise SessionCorruptError(f"events contain malformed JSONL: {path}") from error
             try:
                 event = EventRecord.from_dict(decoded)
@@ -133,7 +141,7 @@ class Persistence:
                 raise SessionCorruptError(f"events contain a duplicate event ID: {path}")
             event_ids.add(event.event_id)
             records.append(event)
-        return records, not raw.endswith((b"\n", b"\r"))
+        return records, "valid" if not raw.endswith((b"\n", b"\r")) else "complete"
 
     def append_event(self, attempt_directory: Path, event: EventRecord) -> None:
         """Append one flushed, complete event record while holding the attempt lock."""
@@ -143,6 +151,18 @@ class Persistence:
     def append_event_locked(self, attempt_directory: Path, event: EventRecord) -> None:
         """Append one event; the caller already owns its lock."""
         path = attempt_directory / EVENTS_FILENAME
+        events, tail = self._read_events(attempt_directory, missing_is_empty=True)
+        if any(existing.event_id == event.event_id for existing in events):
+            raise SessionCorruptError(f"events contain a duplicate event ID: {path}")
+        if tail == "malformed":
+            raise SessionCorruptError(
+                f"events contain an incomplete malformed tail: {path}"
+            )
+        if tail == "valid":
+            # A valid event without its JSONL delimiter must be made complete
+            # before a direct append.  Otherwise the two objects concatenate
+            # into an invalid record.
+            self._write_events_locked(attempt_directory, events)
         try:
             self.filesystem.append_bytes(path, _json_bytes(event.to_dict()))
             self.filesystem.flush_file(path)
@@ -186,7 +206,7 @@ class Persistence:
         if recovery is None:
             return None
         current = self.read_session(attempt_directory)
-        events, has_incomplete_tail = self._read_events(attempt_directory)
+        events, tail = self._read_events(attempt_directory)
         if current not in (recovery.prior_state, recovery.state):
             raise SessionCorruptError(
                 f"submission recovery state does not match: {attempt_directory}"
@@ -203,7 +223,7 @@ class Persistence:
             # Replacing canonical complete records confirms a safe append boundary.
             self._write_events_locked(attempt_directory, events)
         else:
-            if has_incomplete_tail:
+            if tail != "complete":
                 self._write_events_locked(attempt_directory, [*events, expected])
             else:
                 try:
@@ -212,7 +232,7 @@ class Persistence:
                     # An append may have reached the kernel before its flush reported
                     # failure. Rebuild the known complete log rather than retrying an
                     # unknown tail or accepting an unflushed event.
-                    events, _has_incomplete_tail = self._read_events(attempt_directory)
+                    events, _tail = self._read_events(attempt_directory)
                     self._validate_event_attempts(
                         attempt_directory, events, recovery.state
                     )
@@ -248,7 +268,7 @@ class Persistence:
         self, attempt_directory: Path, state: SessionState, clock: Clock
     ) -> EventRecord | None:
         """Recover a missing state event while the caller owns the attempt lock."""
-        events = self.read_events(attempt_directory)
+        events, tail = self._read_events(attempt_directory)
         self._validate_event_attempts(attempt_directory, events, state)
         if any(event.revision == state.revision for event in events):
             return None
@@ -264,7 +284,10 @@ class Persistence:
             outcome="recovered",
             arguments={"reason": "missing_state_revision"},
         )
-        self.append_event_locked(attempt_directory, event)
+        if tail != "complete":
+            self._write_events_locked(attempt_directory, [*events, event])
+        else:
+            self.append_event_locked(attempt_directory, event)
         return event
 
     def _read_submission_recovery_locked(

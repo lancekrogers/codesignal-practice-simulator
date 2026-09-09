@@ -276,6 +276,7 @@ class SchemaValidationTests(unittest.TestCase):
         self.assert_invalid(invalid_session(score=[]), "score must be an object")
 
     def test_session_rejects_illegal_submission_combinations(self) -> None:
+        self.assert_invalid(invalid_session(status="paused"), "session status is invalid")
         self.assert_invalid(
             invalid_session(status=ACTIVE, submitted_at="2026-09-08T19:00:01+00:00"),
             "only submitted",

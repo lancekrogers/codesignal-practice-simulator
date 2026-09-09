@@ -431,6 +431,15 @@ while True:
         }
         (self.attempt / "COACHING.md").write_text("wrong answer", encoding="utf-8")
         (self.attempt / "STATUS.md").write_text("submitted", encoding="utf-8")
+        cache_candidate = self.cache.root / "assessment" / "file_storage" / "simulation.py"
+        cache_candidate.write_text("def evaluate(group): return 'wrong'\n", encoding="utf-8")
+        cache_after = {
+            path.relative_to(self.cache.root).as_posix(): path.read_bytes()
+            for path in self.cache.root.rglob("*")
+            if path.is_file()
+        }
+        self.assertNotEqual(cache_after, cache_before)
+
         score = IsolatedAttemptScorer(FILE_STORAGE).score(self.attempt)
 
         self.assertEqual(score.passed_levels, 4)
@@ -440,7 +449,7 @@ while True:
                 for path in self.cache.root.rglob("*")
                 if path.is_file()
             },
-            cache_before,
+            cache_after,
         )
 
     def test_isolation_excludes_editable_install_pythonpath_and_loose_reference(self) -> None:
@@ -496,6 +505,7 @@ def evaluate(group):
     assert os.getcwd() == sys.path[0]
     assert all("site-packages" not in path for path in sys.path)
     assert all(not key.startswith("PYTHON") for key in os.environ)
+    assert {str(PROJECT / "src")!r} not in sys.path
     try:
         site.main()
     except RuntimeError as error:
@@ -504,7 +514,6 @@ def evaluate(group):
         site.addsitedir({str(site_packages)!r})
     except RuntimeError as error:
         assert "unsafe" in str(error)
-    assert {str(PROJECT / "src")!r} in sys.path
     sys.path.append({str(hostile)!r})
     try:
         exec("pass")

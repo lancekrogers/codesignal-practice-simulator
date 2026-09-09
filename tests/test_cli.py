@@ -598,6 +598,23 @@ class RuntimeCliTests(unittest.TestCase):
         )
         self.assertEqual(code, 3)
 
+    def test_runtime_lock_contention_returns_exit_four_without_mutation(self) -> None:
+        started = self.session(
+            self.execute(["start", "--workspace-root", str(self.workspace), "--json"])[1]
+        )
+        attempt = self.workspace / "attempts" / started["attempt_id"]  # type: ignore[operator]
+        before = file_bytes(attempt)
+        adapter = self.runtime_application(self.workspace)
+
+        with adapter.workspace.persistence.attempt_lock(attempt):
+            code, document = self.execute(
+                ["status", "--workspace-root", str(self.workspace), "--json"]
+            )
+
+        self.assertEqual(code, 4)
+        self.assertEqual(document["error"]["code"], "illegal_lifecycle")  # type: ignore[index]
+        self.assertEqual(file_bytes(attempt), before)
+
     def test_status_and_time_expire_once_and_final_resume_does_not_mutate(self) -> None:
         started = self.session(
             self.execute(["start", "--workspace-root", str(self.workspace), "--json"])[1]
