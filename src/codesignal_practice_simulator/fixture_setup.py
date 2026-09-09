@@ -36,6 +36,7 @@ def load_runtime_manifest() -> dict[str, Any]:
         FileNotFoundError,
         ModuleNotFoundError,
         OSError,
+        UnicodeDecodeError,
         json.JSONDecodeError,
     ) as error:
         raise FixtureSetupError("installed fixture metadata is unavailable") from error
@@ -52,6 +53,7 @@ def runtime_cache_root(
         relative = _relative_path(
             manifest["fixture_cache_root"], "fixture_cache_root"
         )
+        _reject_lexical_symlinks(workspace_root, relative)
         workspace = Path(workspace_root).resolve()
         cache = workspace.joinpath(*relative.parts).resolve()
     except (KeyError, OSError) as error:
@@ -59,6 +61,28 @@ def runtime_cache_root(
     if workspace != cache and workspace not in cache.parents:
         raise FixtureSetupError("workspace fixture cache escapes its root")
     return cache
+
+
+def _reject_lexical_symlinks(
+    workspace_root: Path, relative: PurePosixPath
+) -> None:
+    """Reject symlink traversal before resolving the cache destination."""
+    lexical_workspace = Path(os.path.abspath(workspace_root))
+    current = lexical_workspace
+    components = relative.parts
+    try:
+        if current.is_symlink():
+            raise FixtureSetupError(
+                "workspace fixture cache path must not traverse symlinks"
+            )
+        for component in components:
+            current /= component
+            if current.is_symlink():
+                raise FixtureSetupError(
+                    "workspace fixture cache path must not traverse symlinks"
+                )
+    except OSError as error:
+        raise FixtureSetupError("workspace fixture cache path is invalid") from error
 
 
 def populate_runtime_fixture(
@@ -122,8 +146,8 @@ def _validate_cache_destination(workspace_root: Path, cache_root: Path) -> None:
     if _paths_overlap(attempts, cache_root):
         raise FixtureSetupError("attempts directory must not overlap the fixture cache")
     lexical_attempts = workspace / "attempts"
-    if lexical_attempts.exists() and (
-        not lexical_attempts.is_dir() or lexical_attempts.is_symlink()
+    if lexical_attempts.is_symlink() or (
+        lexical_attempts.exists() and not lexical_attempts.is_dir()
     ):
         raise FixtureSetupError("attempts directory must be a non-symlink directory")
 
@@ -228,6 +252,10 @@ def _verify_staging(manifest: dict[str, Any], staging: Path) -> None:
 
 
 def _publish(staging: Path, cache_root: Path) -> None:
+    if cache_root.is_symlink():
+        raise FixtureSetupError(
+            "workspace fixture cache path must not traverse symlinks"
+        )
     backup = cache_root.with_name(f".{cache_root.name}.previous-{uuid4().hex}")
     moved_existing = False
     try:

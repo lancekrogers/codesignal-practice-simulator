@@ -22,6 +22,7 @@ export function initializeEditor(
   elements: ShellElements,
   source: string,
   workerUrls: EditorWorkerUrls,
+  onChange?: () => void,
 ): EditorHandle {
   configureWorkers(workerUrls);
   registerPython();
@@ -38,6 +39,7 @@ export function initializeEditor(
     theme: "vs-dark",
     wordWrap: "off",
   });
+  model.onDidChangeContent(() => onChange?.());
   registerCompletions();
   return {
     getValue: () => model.getValue(),

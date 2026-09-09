@@ -15,7 +15,11 @@ from typing import Literal
 from uuid import uuid4
 
 from .clock import Clock
-from .errors import IllegalLifecycleError, InvalidInputError
+from .errors import (
+    IllegalLifecycleError,
+    InvalidInputError,
+    SessionUnavailableError,
+)
 from .models import (
     ACTIVE,
     ACTIVE_POINTER_SCHEMA_VERSION,
@@ -83,6 +87,31 @@ class LifecycleService:
         drill_duration_seconds: int | None = None,
     ) -> SessionState:
         """Create and select one active attempt with an effective profile."""
+        return self._start(assessment, mode, drill_duration_seconds)
+
+    def start_web(
+        self,
+        assessment: AssessmentMetadata,
+        *,
+        mode: Literal["full", "drill"] = FULL_MODE,
+        drill_duration_seconds: int | None = None,
+    ) -> SessionState:
+        """Create a web attempt only when no live attempt is selected."""
+        return self._start(
+            assessment,
+            mode,
+            drill_duration_seconds,
+            before_publish=self._reject_live_selection,
+        )
+
+    def _start(
+        self,
+        assessment: AssessmentMetadata,
+        mode: Literal["full", "drill"],
+        drill_duration_seconds: int | None,
+        *,
+        before_publish: Callable[[Path, ActivePointer | None], None] | None = None,
+    ) -> SessionState:
         if not isinstance(assessment, AssessmentMetadata):
             raise InvalidInputError("assessment is invalid")
         profile = self._profile(mode, drill_duration_seconds)
@@ -97,8 +126,24 @@ class LifecycleService:
             status=ACTIVE,
             revision=0,
         )
-        self.workspace.create_attempt(state)
+        self.workspace.create_attempt(state, before_publish=before_publish)
         return state
+
+    def _reject_live_selection(
+        self, attempts: Path, pointer: ActivePointer | None
+    ) -> None:
+        if pointer is None:
+            return
+        attempt = attempts / pointer.attempt_id
+        if not attempt.is_dir() or attempt.is_symlink():
+            raise SessionUnavailableError("selected attempt is unavailable")
+        with self.persistence.attempt_lock(attempt):
+            state, _recovered = self._read_recovered_session_locked(attempt)
+            state, _observed_at = self._expire_if_overdue_locked(attempt, state)
+            if state.status == ACTIVE:
+                raise IllegalLifecycleError(
+                    "an active attempt is already selected"
+                )
 
     def select_attempt(self, attempt_id: str | None = None) -> Path:
         """Resolve an explicit attempt before the validated active selection."""

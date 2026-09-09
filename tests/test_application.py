@@ -132,6 +132,29 @@ class ApplicationCompositionTests(unittest.TestCase):
                     cache=make_cache(Path(directory)),
                 )
 
+    def test_rejects_a_dangling_workspace_root_without_target_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target_parent = root / "unowned-target"
+            target_parent.mkdir()
+            sentinel = target_parent / "sentinel.txt"
+            sentinel.write_text("keep\n", encoding="utf-8")
+            target = target_parent / "workspace"
+            workspace_root = root / "workspace-alias"
+            workspace_root.symlink_to(target, target_is_directory=True)
+
+            with self.assertRaisesRegex(
+                InvalidInputError, "must be a non-symlink directory"
+            ):
+                RuntimeApplication(
+                    workspace_root,
+                    cache=make_cache(root),
+                )
+
+            self.assertFalse(target.exists())
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+            self.assertTrue(workspace_root.is_symlink())
+
     def test_scorer_factory_uses_persisted_registry_definition_and_refreshes_status(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

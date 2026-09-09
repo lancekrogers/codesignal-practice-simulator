@@ -57,6 +57,19 @@ def write_offline_source(root: Path, payloads: dict[str, bytes]) -> Path:
 
 
 class FixtureSetupTests(unittest.TestCase):
+    def test_invalid_packaged_metadata_encoding_is_a_fixture_setup_error(self) -> None:
+        invalid_metadata = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid")
+        with (
+            patch(
+                "codesignal_practice_simulator.fixture_setup.resources.files",
+                side_effect=invalid_metadata,
+            ),
+            self.assertRaisesRegex(
+                FixtureSetupError, "installed fixture metadata is unavailable"
+            ),
+        ):
+            load_runtime_manifest()
+
     def test_packaged_metadata_matches_the_canonical_fetch_records(self) -> None:
         canonical = json.loads(
             (PROJECT / "docs" / "migration-manifest.json").read_text(encoding="utf-8")
@@ -121,6 +134,67 @@ class FixtureSetupTests(unittest.TestCase):
 
             self.assertTrue((workspace / "attempts").is_symlink())
             self.assertFalse(cache.exists())
+
+    def test_setup_refuses_a_dangling_attempts_symlink_before_writing(self) -> None:
+        manifest, _payloads = synthetic_manifest()
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            workspace.mkdir()
+            target_parent = workspace / "unowned-target"
+            target_parent.mkdir()
+            sentinel = target_parent / "sentinel.txt"
+            sentinel.write_text("keep\n", encoding="utf-8")
+            target = target_parent / "attempts"
+            attempts = workspace / "attempts"
+            attempts.symlink_to(target, target_is_directory=True)
+            cache = workspace / ".cache" / "codesignal-fixtures" / "test"
+
+            def fail_download(_url: str) -> bytes:
+                raise AssertionError("download should not start")
+
+            with (
+                patch(
+                    "codesignal_practice_simulator.fixture_setup.load_runtime_manifest",
+                    return_value=manifest,
+                ),
+                self.assertRaisesRegex(
+                    FixtureSetupError, "must be a non-symlink directory"
+                ),
+            ):
+                populate_runtime_fixture(workspace, downloader=fail_download)
+
+            self.assertFalse(target.exists())
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+            self.assertFalse(cache.exists())
+            self.assertTrue(attempts.is_symlink())
+
+    def test_setup_refuses_a_symlinked_cache_ancestor_without_touching_target(self) -> None:
+        manifest, _payloads = synthetic_manifest()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            target = root / "unowned-cache"
+            target.mkdir()
+            sentinel = target / "sentinel.txt"
+            sentinel.write_text("keep\n", encoding="utf-8")
+            (workspace / ".cache").symlink_to(target, target_is_directory=True)
+
+            with (
+                patch(
+                    "codesignal_practice_simulator.fixture_setup.load_runtime_manifest",
+                    return_value=manifest,
+                ),
+                self.assertRaisesRegex(FixtureSetupError, "must not traverse symlinks"),
+            ):
+                populate_runtime_fixture(workspace, downloader=lambda _url: b"unsafe")
+
+            self.assertTrue((workspace / ".cache").is_symlink())
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+            self.assertEqual(
+                sorted(path.name for path in target.iterdir()),
+                ["sentinel.txt"],
+            )
 
     def test_publish_restores_the_old_cache_after_staging_rename_failure(self) -> None:
         manifest, payloads = synthetic_manifest()

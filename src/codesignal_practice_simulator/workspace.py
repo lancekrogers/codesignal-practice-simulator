@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,30 +13,23 @@ from .assessments import (
     AssessmentDefinition,
     AssessmentRegistry,
     DEFAULT_ASSESSMENT_REGISTRY,
-    FILE_STORAGE,
 )
 from .candidate_documents import write_initial_source_baseline
 from .errors import (
-    FixtureSetupRequiredError,
     InvalidInputError,
     SessionCorruptError,
     SessionUnavailableError,
 )
 from .filesystem import Filesystem, LocalFilesystem
-from .fixture_setup import FixtureSetupError, load_runtime_manifest, runtime_cache_root
 from .models import ACTIVE_POINTER_SCHEMA_VERSION, ActivePointer, SessionState
 from .persistence import ACTIVE_FILENAME, Persistence, initial_event
 from .scoring import install_attempt_runner
+from .workspace_cache import CACHE_INPUTS, ValidatedFixtureCache
 
 
 ATTEMPTS_DIRECTORY = "attempts"
 CREATION_MARKER = ".creation-owner.json"
-CACHE_INPUTS = FILE_STORAGE.copied_filenames
-_CACHE_README = "vendor-readme.md"
 _MARKER_SCHEMA_VERSION = "attempt-creation/v1"
-_EXPECTED_CACHE_PATHS = frozenset(
-    (_CACHE_README, *(f"assessment/file_storage/{name}" for name in CACHE_INPUTS))
-)
 
 _COACHING = """# Coaching
 
@@ -64,114 +56,6 @@ bypass it.
 
 class PublishInterrupted(RuntimeError):
     """Test-only crash boundary: publish completed but pointer publication did not."""
-
-
-@dataclass(frozen=True, slots=True)
-class ValidatedFixtureCache:
-    """The complete seven-file cache contract used before workspace mutation."""
-
-    root: Path
-    hashes: dict[str, str]
-
-    @classmethod
-    def from_manifest(cls, manifest_path: Path) -> ValidatedFixtureCache:
-        """Build a cache contract from the project's fetch-only manifest."""
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            cache_relative = manifest["fixture_cache_root"]
-            fetches = manifest["fetches"]
-        except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
-            raise FixtureSetupRequiredError(
-                f"fixture setup is required: cannot read manifest {manifest_path}"
-            ) from error
-        if not isinstance(cache_relative, str) or not isinstance(fetches, list):
-            raise FixtureSetupRequiredError("fixture setup is required: invalid manifest")
-        project_root = manifest_path.resolve().parent.parent
-        root = (project_root / cache_relative).resolve()
-        if root != project_root and project_root not in root.parents:
-            raise FixtureSetupRequiredError("fixture setup is required: cache escapes project")
-        return cls._from_fetches(root, fetches)
-
-    @classmethod
-    def from_runtime_manifest(cls, workspace_root: Path) -> ValidatedFixtureCache:
-        """Build a wheel-safe cache contract from packaged non-vendor metadata."""
-        try:
-            manifest = load_runtime_manifest()
-            root = runtime_cache_root(workspace_root, manifest)
-            fetches = manifest["fetches"]
-        except (FixtureSetupError, KeyError, TypeError) as error:
-            raise FixtureSetupRequiredError(
-                "fixture setup is required: installed fixture metadata is invalid"
-            ) from error
-        return cls._from_fetches(root, fetches)
-
-    @classmethod
-    def _from_fetches(
-        cls, root: Path, fetches: object
-    ) -> ValidatedFixtureCache:
-        """Validate the seven cache records shared by source and wheel manifests."""
-        if not isinstance(fetches, list):
-            raise FixtureSetupRequiredError("fixture setup is required: invalid manifest")
-        hashes: dict[str, str] = {}
-        for record in fetches:
-            if not isinstance(record, dict):
-                raise FixtureSetupRequiredError("fixture setup is required: invalid manifest")
-            path = record.get("cache_path")
-            digest = record.get("sha256")
-            if (
-                not isinstance(path, str)
-                or not isinstance(digest, str)
-                or len(digest) != 64
-                or any(character not in "0123456789abcdef" for character in digest)
-                or path in hashes
-            ):
-                raise FixtureSetupRequiredError("fixture setup is required: invalid manifest")
-            hashes[path] = digest
-        if set(hashes) != _EXPECTED_CACHE_PATHS:
-            raise FixtureSetupRequiredError(
-                "fixture setup is required: manifest does not define seven cache records"
-            )
-        return cls(root=root, hashes=hashes)
-
-    def validate(self, filesystem: Filesystem) -> None:
-        """Verify the complete cache and all hashes before any attempt write."""
-        if set(self.hashes) != _EXPECTED_CACHE_PATHS:
-            raise FixtureSetupRequiredError(
-                "fixture setup is required: cache contract lacks seven records"
-            )
-        if not self.root.is_dir() or self.root.is_symlink():
-            raise FixtureSetupRequiredError(
-                f"fixture setup is required: cache is absent at {self.root}"
-            )
-        actual: set[str] = set()
-        try:
-            for path in self.root.rglob("*"):
-                if path.is_symlink():
-                    raise FixtureSetupRequiredError(
-                        f"fixture setup is required: cache contains symlink {path}"
-                    )
-                if path.is_file():
-                    actual.add(path.relative_to(self.root).as_posix())
-        except OSError as error:
-            raise FixtureSetupRequiredError(
-                f"fixture setup is required: cannot inspect cache {self.root}"
-            ) from error
-        if actual != set(self.hashes):
-            raise FixtureSetupRequiredError(
-                "fixture setup is required: cache does not contain exactly seven files"
-            )
-        for relative, expected_hash in self.hashes.items():
-            path = self.root.joinpath(*relative.split("/"))
-            try:
-                actual_hash = hashlib.sha256(filesystem.read_bytes(path)).hexdigest()
-            except OSError as error:
-                raise FixtureSetupRequiredError(
-                    f"fixture setup is required: cannot read cache file {relative}"
-                ) from error
-            if actual_hash != expected_hash:
-                raise FixtureSetupRequiredError(
-                    f"fixture setup is required: cache hash mismatch for {relative}"
-                )
 
 
 class WorkspaceManager:
@@ -222,9 +106,26 @@ class WorkspaceManager:
         return self._validated_attempts_directory()
 
     def create_attempt(
-        self, state: SessionState, *, interrupt_after_publish: bool = False
+        self,
+        state: SessionState,
+        *,
+        interrupt_after_publish: bool = False,
+        before_publish: Callable[[Path, ActivePointer | None], None] | None = None,
     ) -> Path:
-        """Build an attempt in staging, publish it, then atomically select it."""
+        """Build an attempt, optionally checking selection before publication."""
+        self._validate_creation_state(state)
+        self.cache.validate(self.filesystem)
+        attempts = self.attempts_directory
+        self.filesystem.mkdir(attempts, parents=True, exist_ok=True)
+        with self.persistence.workspace_lock(attempts):
+            return self._create_attempt_locked(
+                attempts,
+                state,
+                interrupt_after_publish=interrupt_after_publish,
+                before_publish=before_publish,
+            )
+
+    def _validate_creation_state(self, state: SessionState) -> None:
         definition = self.registry.require(state.assessment.assessment_id)
         if state.assessment != definition.metadata:
             raise InvalidInputError(
@@ -232,52 +133,76 @@ class WorkspaceManager:
             )
         if not definition.supports_profile(state.profile.profile_id):
             raise InvalidInputError("assessment does not support the selected profile")
-        self.cache.validate(self.filesystem)
-        attempts = self.attempts_directory
-        self.filesystem.mkdir(attempts, parents=True, exist_ok=True)
-        with self.persistence.workspace_lock(attempts):
-            self._reconcile_locked(attempts)
-            prior_pointer = self.persistence.read_active_pointer(attempts)
-            destination = attempts / state.attempt_id
-            if destination.exists() or destination.is_symlink():
-                raise InvalidInputError(f"attempt already exists: {state.attempt_id}")
 
-            token = str(uuid4())
-            staging = attempts / f".{state.attempt_id}.staging-{token}"
-            published = False
-            pointer_publish_started = False
-            try:
-                self.filesystem.mkdir(staging)
-                self._populate_staging(staging, state, token)
-                # A filesystem operation can report failure after publishing.
-                # Mark this transaction-owned destination first so rollback
-                # handles either outcome safely.
-                published = True
-                self.filesystem.replace(staging, destination)
-                if interrupt_after_publish:
-                    raise PublishInterrupted("attempt published before active pointer update")
-                pointer_publish_started = True
-                self.persistence.write_active_pointer_locked(
-                    attempts,
-                    ActivePointer(ACTIVE_POINTER_SCHEMA_VERSION, state.attempt_id),
-                )
-                self._remove_marker_best_effort(destination)
-                return destination
-            except PublishInterrupted:
-                raise
-            except Exception:
-                restored_prior_pointer = True
-                if pointer_publish_started:
-                    restored_prior_pointer = self._restore_active_pointer_best_effort(
-                        attempts, prior_pointer
-                    )
-                rollback_published = (
-                    destination
-                    if published and (not pointer_publish_started or restored_prior_pointer)
-                    else None
-                )
-                self._rollback_new_attempt(staging, rollback_published)
-                raise
+    def _create_attempt_locked(
+        self,
+        attempts: Path,
+        state: SessionState,
+        *,
+        interrupt_after_publish: bool,
+        before_publish: Callable[[Path, ActivePointer | None], None] | None,
+    ) -> Path:
+        self._reconcile_locked(attempts)
+        prior_pointer = self.persistence.read_active_pointer(attempts)
+        destination = attempts / state.attempt_id
+        if destination.exists() or destination.is_symlink():
+            raise InvalidInputError(f"attempt already exists: {state.attempt_id}")
+        if before_publish is not None:
+            before_publish(attempts, prior_pointer)
+        token = str(uuid4())
+        staging = attempts / f".{state.attempt_id}.staging-{token}"
+        published = False
+        pointer_publish_started = False
+        try:
+            self.filesystem.mkdir(staging)
+            self._populate_staging(staging, state, token)
+            # A filesystem operation can report failure after publishing.
+            # Mark this transaction-owned destination first so rollback
+            # handles either outcome safely.
+            published = True
+            self.filesystem.replace(staging, destination)
+            if interrupt_after_publish:
+                raise PublishInterrupted("attempt published before active pointer update")
+            pointer_publish_started = True
+            self.persistence.write_active_pointer_locked(
+                attempts,
+                ActivePointer(ACTIVE_POINTER_SCHEMA_VERSION, state.attempt_id),
+            )
+            self._remove_marker_best_effort(destination)
+            return destination
+        except PublishInterrupted:
+            raise
+        except Exception:
+            self._rollback_failed_create(
+                attempts,
+                prior_pointer,
+                staging,
+                destination,
+                published,
+                pointer_publish_started,
+            )
+            raise
+
+    def _rollback_failed_create(
+        self,
+        attempts: Path,
+        prior_pointer: ActivePointer | None,
+        staging: Path,
+        destination: Path,
+        published: bool,
+        pointer_publish_started: bool,
+    ) -> None:
+        restored_prior_pointer = True
+        if pointer_publish_started:
+            restored_prior_pointer = self._restore_active_pointer_best_effort(
+                attempts, prior_pointer
+            )
+        rollback_published = (
+            destination
+            if published and (not pointer_publish_started or restored_prior_pointer)
+            else None
+        )
+        self._rollback_new_attempt(staging, rollback_published)
 
     def reconcile(self) -> list[str]:
         """Recover only marker-owned attempts unpublished by an interrupted create."""
@@ -370,7 +295,7 @@ class WorkspaceManager:
             raise InvalidInputError(
                 "attempts directory must not overlap the fixture cache"
             )
-        if attempts.exists() and (not attempts.is_dir() or attempts.is_symlink()):
+        if attempts.is_symlink() or (attempts.exists() and not attempts.is_dir()):
             raise InvalidInputError("attempts directory must be a non-symlink directory")
         return attempts
 

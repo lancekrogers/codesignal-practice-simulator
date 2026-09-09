@@ -195,7 +195,7 @@ class RouteHandler:
             isinstance(duration, bool) or not isinstance(duration, int) or duration <= 0
         ):
             raise RequestError(422, "invalid_input", "drill duration is invalid")
-        snapshot = self.application.start_snapshot(
+        snapshot = self.application.start_web_snapshot(
             assessment=assessment,
             mode=mode,  # type: ignore[arg-type]
             drill_duration_seconds=duration,

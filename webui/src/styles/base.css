@@ -1,0 +1,180 @@
+:root {
+  color-scheme: dark;
+  font: 15px/1.45 system-ui, sans-serif;
+  background: #11161d;
+  color: #e8edf2;
+  --canvas: #11161d;
+  --panel: #18212b;
+  --panel-raised: #202c38;
+  --line: #3b4a5a;
+  --muted: #aeb9c6;
+  --accent: #9cc7ff;
+  --success: #55d68a;
+  --warning: #e3ad5d;
+  --danger: #e37878;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  min-width: 18rem;
+  background: var(--canvas);
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+button {
+  border: 1px solid #71829a;
+  border-radius: 0.35rem;
+  cursor: pointer;
+  padding: 0.55rem 0.85rem;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgb(17 22 29 / 90%);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.sr-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+button.primary {
+  background: var(--accent);
+  color: #10151c;
+}
+
+button.secondary {
+  background: var(--panel-raised);
+  color: var(--primary-text, #e8edf2);
+}
+
+.shell {
+  width: min(72rem, 100%);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 2rem clamp(1rem, 4vw, 3rem);
+}
+
+.loading-state {
+  display: grid;
+  align-content: center;
+  min-height: 100vh;
+}
+
+.loading-state h1,
+.entry h1,
+.error-state h1 {
+  margin-top: 0;
+}
+
+.status,
+.entry header p,
+.editor-heading span,
+.server-deadline,
+.session-mode {
+  color: var(--muted);
+}
+
+.entry {
+  max-width: 58rem;
+}
+
+.entry section {
+  margin: 1.5rem 0;
+}
+
+.entry h2 {
+  font-size: 1.1rem;
+}
+
+.outline,
+.entry ul {
+  padding-left: 1.5rem;
+}
+
+.outline li,
+.entry li {
+  margin: 0.5rem 0;
+}
+
+.warning {
+  border-left: 0.25rem solid var(--warning);
+  padding: 0.75rem 1rem;
+  background: #28251d;
+}
+
+.format-form {
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  padding: 1rem;
+}
+
+fieldset {
+  border: 0;
+  margin: 0 0 1rem;
+  padding: 0;
+}
+
+legend {
+  font-weight: 700;
+  margin-bottom: 0.75rem;
+}
+
+.format-option {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  margin: 0.75rem 0;
+}
+
+dialog {
+  max-width: 32rem;
+  border: 1px solid #71829a;
+  border-radius: 0.4rem;
+  background: var(--panel);
+  color: #e8edf2;
+  padding: 1.5rem;
+}
+
+dialog::backdrop {
+  background: rgb(0 0 0 / 65%);
+}
+
+dialog button + button {
+  margin-left: 0.5rem;
+}
+
+.error-state {
+  max-width: 48rem;
+}
+
+.error-message {
+  border-left: 0.25rem solid var(--danger);
+  padding: 0.75rem 1rem;
+  background: #2c2024;
+}

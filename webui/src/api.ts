@@ -4,6 +4,34 @@ export type ApiDocument = {
   error?: { code?: string; message?: string };
 };
 
+export type ApiAction =
+  | "bootstrap"
+  | "start"
+  | "reconnect";
+
+export type SafeApiFailure = {
+  kind:
+    | "conflict"
+    | "unavailable"
+    | "read_only"
+    | "reconnect"
+    | "internal";
+  message: string;
+  recovery: "reload" | "reconnect" | "none";
+};
+
+export class ApiError extends Error {
+  readonly code: string;
+  readonly status: number;
+
+  constructor(code: string, message: string, status = 0) {
+    super(message);
+    this.name = "ApiError";
+    this.code = code;
+    this.status = status;
+  }
+}
+
 export type StaticAsset = {
   media_type: string;
   cache_control: string;
@@ -43,15 +71,107 @@ export async function loadManifest(): Promise<StaticManifest> {
 }
 
 export async function apiGet(path: string): Promise<ApiDocument> {
-  const response = await fetch(path, {
-    headers: { "X-Simulator-Token": capability() },
-    cache: "no-store",
-  });
-  const document = (await response.json()) as ApiDocument;
+  return apiRequest("GET", path);
+}
+
+export async function apiPost(
+  path: string,
+  body: Record<string, unknown>,
+): Promise<ApiDocument> {
+  return apiRequest("POST", path, body);
+}
+
+async function apiRequest(
+  method: "GET" | "POST",
+  path: string,
+  body?: Record<string, unknown>,
+): Promise<ApiDocument> {
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method,
+      headers: {
+        "X-Simulator-Token": capability(),
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      cache: "no-store",
+    });
+  } catch {
+    throw new ApiError("reconnect", "the local simulator could not be reached");
+  }
+  let document: ApiDocument;
+  try {
+    document = (await response.json()) as ApiDocument;
+  } catch {
+    throw new ApiError("invalid_response", "the local simulator returned invalid data");
+  }
   if (!response.ok || !document.ok) {
-    throw new Error(document.error?.message || "local simulator request failed");
+    throw new ApiError(
+      document.error?.code || "request_failed",
+      document.error?.message || "the local simulator rejected the request",
+      response.status,
+    );
   }
   return document;
+}
+
+export function describeApiError(
+  error: unknown,
+  action: ApiAction,
+): SafeApiFailure {
+  if (!(error instanceof ApiError)) {
+    return {
+      kind: "internal",
+      message: action === "bootstrap"
+        ? "The assessment entry data is invalid. Reload the local simulator and try again."
+        : genericMessage(action),
+      recovery: action === "start" ? "reload" : "reconnect",
+    };
+  }
+  switch (error.code) {
+    case "session_unavailable":
+      return {
+        kind: "unavailable",
+        message: "The local assessment fixture or selected session is unavailable. Reconnect after preparing the local simulator.",
+        recovery: "reconnect",
+      };
+    case "lifecycle_locked":
+      return {
+        kind: action === "start" ? "conflict" : "read_only",
+        message: action === "start"
+          ? "An active session is already selected. Reconnect before starting another."
+          : "This session is no longer accepting changes. The visible source remains available for review.",
+        recovery: action === "start" ? "reconnect" : "none",
+      };
+    case "reconnect":
+      return {
+        kind: "reconnect",
+        message: "The local simulator could not be reached. Check that it is running, then reconnect.",
+        recovery: "reconnect",
+      };
+    default:
+      return {
+        kind: "internal",
+        message: genericMessage(action),
+        recovery: action === "start" || action === "bootstrap"
+          ? "reload"
+          : "reconnect",
+      };
+  }
+}
+
+function genericMessage(action: ApiAction): string {
+  if (action === "bootstrap") {
+    return "The assessment entry data could not be loaded safely. Reload the local simulator.";
+  }
+  if (action === "start") {
+    return "Start could not be confirmed safely. Reload to reconnect; do not press Start again.";
+  }
+  if (action === "reconnect") {
+    return "The selected session could not be restored safely. Reconnect to the local simulator.";
+  }
+  return "The local simulator could not complete this entry action safely. Reconnect and try again.";
 }
 
 function capability(): string {

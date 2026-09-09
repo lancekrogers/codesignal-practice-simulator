@@ -145,6 +145,23 @@ class RuntimeApplication:
             state = self._start_locked(assessment, mode, drill_duration_seconds)
             return self._evaluation_snapshot_locked(state)
 
+    def start_web_snapshot(
+        self,
+        *,
+        assessment: str,
+        mode: Literal["full", "drill"],
+        drill_duration_seconds: int | None,
+    ) -> EvaluationSnapshot:
+        """Create the browser attempt under the live-selection guard."""
+        with self._action_lock:
+            state = self._start_locked(
+                assessment,
+                mode,
+                drill_duration_seconds,
+                web_start=True,
+            )
+            return self._evaluation_snapshot_locked(state)
+
     def bootstrap(self) -> dict[str, object]:
         """Return browser entry metadata and the currently selected session."""
         with self._action_lock:
@@ -307,6 +324,8 @@ class RuntimeApplication:
         assessment: str,
         mode: Literal["full", "drill"],
         drill_duration_seconds: int | None,
+        *,
+        web_start: bool = False,
     ) -> SessionState:
         definition = self.registry.require(assessment)
         # ``create_attempt`` validates the same complete cache again immediately
@@ -319,7 +338,8 @@ class RuntimeApplication:
                 "`codesignal-sim fetch --workspace-root "
                 f"{self.workspace.workspace_root}`"
             ) from error
-        state = self.lifecycle.start(
+        starter = self.lifecycle.start_web if web_start else self.lifecycle.start
+        state = starter(
             definition.metadata,
             mode=mode,  # type: ignore[arg-type]
             drill_duration_seconds=drill_duration_seconds,
@@ -408,7 +428,7 @@ def _validate_root(path: Path, label: str) -> None:
     """Reject invalid filesystem destinations before any service can mutate them."""
     try:
         resolved = path.resolve()
-        if path.exists() and (not path.is_dir() or path.is_symlink()):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
             raise InvalidInputError(f"{label} must be a non-symlink directory")
         ancestor = resolved
         while not ancestor.exists() and ancestor != ancestor.parent:

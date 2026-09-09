@@ -49,11 +49,6 @@ def main() -> None:
             workspace,
             cache=ValidatedFixtureCache.from_manifest(manifest),
         )
-        application.start(
-            assessment="file_storage",
-            mode="drill",
-            drill_duration_seconds=60,
-        )
         server = WebServer(
             WebServerConfig(workspace, no_open=True, token=TOKEN),
             application=application,

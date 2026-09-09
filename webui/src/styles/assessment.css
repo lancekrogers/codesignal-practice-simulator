@@ -1,0 +1,358 @@
+.assessment-shell {
+  display: flex;
+  width: 100%;
+  min-height: 100vh;
+  flex-direction: column;
+  padding: 0;
+}
+
+.assessment-header {
+  display: flex;
+  position: sticky;
+  z-index: 4;
+  top: 0;
+  justify-content: space-between;
+  gap: 1.5rem;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  background: rgb(17 22 29 / 96%);
+  padding: 0.7rem clamp(0.9rem, 2.5vw, 2rem);
+  backdrop-filter: blur(0.4rem);
+}
+
+.title-group h1,
+.pane-heading h2,
+.prompt-pane h2 {
+  margin: 0;
+}
+
+.title-group h1 {
+  font-size: 1.05rem;
+}
+
+.session-mode,
+.server-deadline {
+  margin: 0.1rem 0 0;
+  font-size: 0.78rem;
+}
+
+.header-meta,
+.timer-group,
+.header-status {
+  display: flex;
+  gap: 0.7rem;
+  align-items: center;
+}
+
+.header-meta {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.meta-label {
+  display: block;
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.timer-group {
+  gap: 0.45rem;
+  border-right: 1px solid var(--line);
+  padding-right: 0.8rem;
+}
+
+.timer-group strong {
+  min-width: 4.2rem;
+  color: #fff;
+  font: 700 1.2rem/1 ui-monospace, monospace;
+}
+
+.header-status {
+  display: block;
+  min-width: 5rem;
+}
+
+.header-status strong {
+  display: block;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.level-navigation {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  padding: 0.5rem clamp(0.9rem, 2.5vw, 2rem);
+}
+
+.nav-label {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.level-list {
+  display: flex;
+  gap: 0.4rem;
+  overflow-x: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.level-button {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.level-button[aria-current="step"] {
+  border-color: var(--accent);
+  background: #263b52;
+  color: #fff;
+}
+
+.level-button:focus-visible,
+.tab-button:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.workspace-grid {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  grid-template-areas:
+    "prompt editor"
+    "prompt output";
+  grid-template-columns: minmax(16rem, 0.8fr) minmax(28rem, 1.5fr);
+  grid-template-rows: minmax(25rem, 1fr) minmax(8rem, 0.3fr);
+  gap: 0.7rem;
+  padding: 0.7rem;
+}
+
+.prompt-pane,
+.editor-pane,
+.output-drawer {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  background: var(--panel);
+}
+
+.prompt-pane {
+  display: flex;
+  min-height: 25rem;
+  grid-area: prompt;
+  flex-direction: column;
+  overflow: auto;
+  resize: horizontal;
+}
+
+.editor-pane {
+  display: flex;
+  min-height: 25rem;
+  grid-area: editor;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.output-drawer {
+  display: flex;
+  max-height: 18rem;
+  grid-area: output;
+  flex-direction: column;
+  overflow: auto;
+  resize: vertical;
+}
+
+.prompt-pane > h2,
+.prompt-tabs,
+.prompt-copy,
+.pane-heading,
+.editor-pane > .status,
+.output-copy {
+  margin-left: 1rem;
+  margin-right: 1rem;
+}
+
+.prompt-pane > h2,
+.pane-heading {
+  padding-top: 0.85rem;
+}
+
+.prompt-tabs {
+  display: flex;
+  gap: 0.15rem;
+  overflow-x: auto;
+  margin-top: 0.75rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.tab-button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.tab-button[aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: #fff;
+}
+
+.tab-button[aria-selected="false"] {
+  color: var(--muted);
+}
+
+.prompt-copy {
+  overflow: auto;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.prompt-loading,
+.prompt-error,
+.output-copy {
+  color: var(--muted);
+}
+
+.prompt-error {
+  color: var(--warning);
+}
+
+.pane-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.65rem;
+}
+
+.pane-heading h2,
+.prompt-pane h2 {
+  font-size: 0.95rem;
+}
+
+.pane-detail {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.editor-pane > .status {
+  flex: 0 0 auto;
+  margin-top: 0.6rem;
+  margin-bottom: 0.6rem;
+  font-size: 0.8rem;
+}
+
+.editor,
+.fallback {
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+}
+
+.editor {
+  overflow: hidden;
+}
+
+.fallback {
+  display: block;
+  resize: vertical;
+  border: 0;
+  background: #171d25;
+  color: #e8edf2;
+  padding: 1rem;
+  font: 0.9rem/1.5 ui-monospace, monospace;
+}
+
+.action-bar {
+  display: flex;
+  position: sticky;
+  z-index: 3;
+  bottom: 0;
+  justify-content: space-between;
+  gap: 0.7rem;
+  border-top: 1px solid var(--line);
+  background: rgb(24 33 43 / 97%);
+  padding: 0.7rem clamp(0.9rem, 2.5vw, 2rem);
+  backdrop-filter: blur(0.4rem);
+}
+
+.action-group {
+  display: flex;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.submit-action {
+  border-color: #66e39b;
+  background: var(--success);
+  color: #082316;
+}
+
+@media (max-width: 60rem) {
+  .assessment-header {
+    align-items: flex-start;
+  }
+
+  .workspace-grid {
+    grid-template-areas:
+      "prompt"
+      "editor"
+      "output";
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(20rem, auto) minmax(28rem, 32rem) minmax(8rem, auto);
+  }
+
+  .prompt-pane {
+    min-height: 20rem;
+    max-height: 32rem;
+    resize: vertical;
+  }
+}
+
+@media (max-width: 42rem) {
+  .assessment-header {
+    display: block;
+  }
+
+  .header-meta {
+    justify-content: flex-start;
+    margin-top: 0.7rem;
+  }
+
+  .action-bar {
+    flex-wrap: wrap;
+  }
+
+  .navigation-actions {
+    order: 3;
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
