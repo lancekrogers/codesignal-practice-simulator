@@ -21,7 +21,7 @@ PROJECT = Path(__file__).resolve().parents[1]
 START = datetime(2000, 1, 1, tzinfo=timezone.utc)
 _SCORER_CAPTURE_TIMEOUT_SECONDS = 4
 _SCORER_CAPTURE_POLL_SECONDS = 0.02
-_CANDIDATE_GROUP_DURATION_SECONDS = 0.2
+_CANDIDATE_GROUP_DURATION_SECONDS = 0.5
 
 
 def _bytes_under(root: Path, *, ignored_names: set[str] | None = None) -> dict[str, bytes]:

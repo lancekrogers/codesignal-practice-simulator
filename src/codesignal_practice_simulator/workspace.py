@@ -187,8 +187,19 @@ class WorkspaceManager:
     ) -> None:
         self.workspace_root = workspace_root.resolve()
         self.cache = cache
-        self.filesystem = filesystem or LocalFilesystem()
-        self.persistence = persistence or Persistence(self.filesystem)
+        if persistence is not None:
+            if filesystem is None:
+                filesystem = persistence.filesystem
+            elif persistence.filesystem is not filesystem:
+                raise InvalidInputError(
+                    "filesystem and persistence must use the same filesystem"
+                )
+        if filesystem is None:
+            filesystem = LocalFilesystem()
+        if persistence is None:
+            persistence = Persistence(filesystem)
+        self.filesystem = filesystem
+        self.persistence = persistence
         self.registry = registry
 
     @classmethod
@@ -196,7 +207,8 @@ class WorkspaceManager:
         cls, project_root: Path, *, filesystem: Filesystem | None = None
     ) -> WorkspaceManager:
         """Create a manager for a project's manifest, cache, and ``attempts`` root."""
-        filesystem = filesystem or LocalFilesystem()
+        if filesystem is None:
+            filesystem = LocalFilesystem()
         return cls(
             project_root,
             ValidatedFixtureCache.from_manifest(project_root / "docs/migration-manifest.json"),

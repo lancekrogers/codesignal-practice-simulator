@@ -227,7 +227,7 @@ class IsolatedAttemptScorer:
             raise InvalidInputError("assessment definition is not registered")
         if timeout_seconds <= 0:
             raise InvalidInputError("scoring timeout must be positive")
-        selected = Path(interpreter or sys.executable).resolve()
+        selected = Path(sys.executable if interpreter is None else interpreter).resolve()
         if not selected.is_absolute():
             raise InvalidInputError("scoring interpreter must be absolute")
         self.definition = definition

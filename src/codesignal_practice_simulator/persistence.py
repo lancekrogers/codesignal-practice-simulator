@@ -43,7 +43,7 @@ class Persistence:
     """Own all durable state formats and their atomic filesystem discipline."""
 
     def __init__(self, filesystem: Filesystem | None = None) -> None:
-        self.filesystem = filesystem or LocalFilesystem()
+        self.filesystem = LocalFilesystem() if filesystem is None else filesystem
 
     @contextmanager
     def attempt_lock(self, attempt_directory: Path) -> Iterator[None]:

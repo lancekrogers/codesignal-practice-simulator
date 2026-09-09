@@ -195,7 +195,8 @@ def write_status(
     filesystem: Filesystem | None = None,
 ) -> None:
     """Atomically replace only the generated ``STATUS.md`` surface."""
-    filesystem = filesystem or LocalFilesystem()
+    if filesystem is None:
+        filesystem = LocalFilesystem()
     status = attempt / STATUS_FILENAME
     temporary = attempt / f".{STATUS_FILENAME}.{uuid4().hex}.tmp"
     try:

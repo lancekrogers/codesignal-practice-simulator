@@ -12,26 +12,19 @@ import json
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Protocol, TextIO
+from typing import Any, Literal, Protocol, TextIO
 from uuid import UUID
 
 from . import __version__
-from .assessments import AssessmentRegistry, DEFAULT_ASSESSMENT_REGISTRY
-from .clock import Clock, UTCClock
-from .evaluation import EvaluationService
+from .application import RuntimeApplication, create_application
 from .errors import (
     DomainError,
     ExitCode,
-    FixtureSetupRequiredError,
     InvalidInputError,
 )
-from .fixture_setup import FixtureSetupError, populate_runtime_fixture
-from .lifecycle import LifecycleService, SubmissionResult, TimeObservation
-from .models import ScoreSummary, SessionState
-from .prompts import PromptService
-from .rendering import AttemptContextService, ContextResult, DerivedStatusService
-from .scoring import IsolatedAttemptScorer
-from .workspace import ATTEMPTS_DIRECTORY, ValidatedFixtureCache, WorkspaceManager
+from .lifecycle import SubmissionResult, TimeObservation
+from .models import SessionState
+from .rendering import ContextResult
 
 
 CLI_SCHEMA_VERSION = "cli/v1"
@@ -44,7 +37,11 @@ class CommandApplication(Protocol):
     def fetch(self, *, source: Path | None) -> object: ...
 
     def start(
-        self, *, assessment: str, mode: str, drill_duration_seconds: int | None
+        self,
+        *,
+        assessment: str,
+        mode: Literal["full", "drill"],
+        drill_duration_seconds: int | None,
     ) -> object: ...
 
     def resume(self, *, attempt_id: str | None) -> object: ...
@@ -59,7 +56,12 @@ class CommandApplication(Protocol):
 
     def submit(self, *, attempt_id: str | None) -> object: ...
 
-    def context(self, *, attempt_id: str | None, output_format: str) -> object: ...
+    def context(
+        self,
+        *,
+        attempt_id: str | None,
+        output_format: Literal["markdown", "json"],
+    ) -> object: ...
 
 
 ApplicationFactory = Callable[[Path], CommandApplication]
@@ -75,113 +77,6 @@ class _Parser(argparse.ArgumentParser):
 
 class _SerializationError(Exception):
     """Result serialization failed after an application adapter completed."""
-
-
-class _RuntimeApplication:
-    """Thin production adapter over the registry, workspace, and lifecycle services."""
-
-    def __init__(
-        self,
-        workspace_root: Path,
-        *,
-        clock: Clock | None = None,
-        registry: AssessmentRegistry = DEFAULT_ASSESSMENT_REGISTRY,
-    ) -> None:
-        _validate_root(workspace_root, "workspace root")
-        resolved_workspace = workspace_root.resolve()
-        cache = ValidatedFixtureCache.from_runtime_manifest(resolved_workspace)
-        self.workspace = WorkspaceManager(
-            resolved_workspace, cache, registry=registry
-        )
-        self.lifecycle = LifecycleService(
-            self.workspace,
-            clock or UTCClock(),
-            self._score_selected_attempt,
-        )
-        self.evaluation = EvaluationService(self.lifecycle)
-        self.prompts = PromptService(self.workspace)
-        self.contexts = AttemptContextService(self.workspace)
-        self.derived_status = DerivedStatusService(self.workspace)
-        self.registry = registry
-
-    def _score_selected_attempt(self, attempt: Path) -> ScoreSummary:
-        """Create an assessment-specific isolated runner from persisted metadata."""
-        state = self.workspace.persistence.read_session(attempt)
-        definition = self.workspace.definition_for_persisted_session(state)
-        return IsolatedAttemptScorer(definition).score(attempt)
-
-    def fetch(self, *, source: Path | None) -> Mapping[str, object]:
-        """Populate this workspace's ignored fixture cache from packaged metadata."""
-        try:
-            cache_root = populate_runtime_fixture(
-                self.workspace.workspace_root, source_root=source
-            )
-        except FixtureSetupError as error:
-            raise FixtureSetupRequiredError(
-                f"fixture setup is required: {error}"
-            ) from error
-        return {"fixture_cache": str(cache_root)}
-
-    def start(
-        self, *, assessment: str, mode: str, drill_duration_seconds: int | None
-    ) -> SessionState:
-        definition = self.registry.require(assessment)
-        # ``create_attempt`` validates the same complete cache again immediately
-        # before it creates any workspace path, closing the validation-to-write gap.
-        try:
-            self.workspace.cache.validate(self.workspace.filesystem)
-        except FixtureSetupRequiredError as error:
-            raise FixtureSetupRequiredError(
-                f"{error.message}; run "
-                "`codesignal-sim fetch --workspace-root "
-                f"{self.workspace.workspace_root}`"
-            ) from error
-        state = self.lifecycle.start(
-            definition.metadata,
-            mode=mode,  # type: ignore[arg-type]
-            drill_duration_seconds=drill_duration_seconds,
-        )
-        self.derived_status.refresh(state.attempt_id)
-        return state
-
-    def resume(self, *, attempt_id: str | None) -> SessionState:
-        state = self.lifecycle.resume(attempt_id)
-        self.derived_status.refresh(state.attempt_id)
-        return state
-
-    def status(self, *, attempt_id: str | None) -> SessionState:
-        state = self.lifecycle.status(attempt_id)
-        self.derived_status.refresh(state.attempt_id)
-        return state
-
-    def time(self, *, attempt_id: str | None) -> TimeObservation:
-        observation = self.lifecycle.time(attempt_id)
-        self.derived_status.refresh(observation.state.attempt_id)
-        return observation
-
-    def task(self, *, attempt_id: str | None, level: int) -> object:
-        result = self.prompts.read_prompt(attempt_id=attempt_id, level=level)
-        self.derived_status.refresh(result.attempt_id)
-        return result
-
-    def test(self, *, attempt_id: str | None) -> SessionState:
-        state = self.evaluation.test(attempt_id)
-        self.derived_status.refresh(state.attempt_id)
-        return state
-
-    def submit(self, *, attempt_id: str | None) -> SubmissionResult:
-        result = self.evaluation.submit(attempt_id)
-        if result.newly_submitted:
-            self.derived_status.refresh(result.state.attempt_id)
-        return result
-
-    def context(
-        self, *, attempt_id: str | None, output_format: str
-    ) -> ContextResult:
-        return self.contexts.read(
-            attempt_id=attempt_id,
-            output_format=output_format,  # type: ignore[arg-type]
-        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -250,11 +145,17 @@ def execute(
         if namespace.command is None:
             raise InvalidInputError("a command is required")
         _validate_arguments(namespace)
-        application = (application_factory or _default_application)(
+        selected_application_factory = (
+            _default_application
+            if application_factory is None
+            else application_factory
+        )
+        application = selected_application_factory(
             namespace.workspace_root
         )
         result = _dispatch(application, namespace)
-        document = _serialize_document(serializer or serialize_result, result)
+        selected_serializer = serialize_result if serializer is None else serializer
+        document = _serialize_document(selected_serializer, result)
     except DomainError as error:
         _write_document(
             output,
@@ -364,26 +265,8 @@ def _validate_arguments(namespace: argparse.Namespace) -> None:
         raise InvalidInputError("full mode does not accept a drill duration")
 
 
-def _default_application(workspace_root: Path) -> CommandApplication:
-    return _RuntimeApplication(workspace_root)
-
-
-def _validate_root(path: Path, label: str) -> None:
-    """Reject invalid filesystem destinations before any service can mutate them."""
-    try:
-        resolved = path.resolve()
-        if path.exists() and (not path.is_dir() or path.is_symlink()):
-            raise InvalidInputError(f"{label} must be a non-symlink directory")
-        ancestor = resolved
-        while not ancestor.exists() and ancestor != ancestor.parent:
-            ancestor = ancestor.parent
-        if not ancestor.is_dir():
-            raise InvalidInputError(f"{label} parent must be a directory")
-        destination = resolved / ATTEMPTS_DIRECTORY
-        if destination == resolved or resolved not in destination.parents:
-            raise InvalidInputError(f"{label} attempts destination is invalid")
-    except OSError as error:
-        raise InvalidInputError(f"{label} must be a valid path") from error
+def _default_application(workspace_root: Path) -> RuntimeApplication:
+    return create_application(workspace_root)
 
 
 def _serialize_document(

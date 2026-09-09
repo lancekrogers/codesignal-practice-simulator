@@ -23,6 +23,7 @@ PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT / "src"))
 
 from codesignal_practice_simulator import cli
+from codesignal_practice_simulator.application import RuntimeApplication
 from codesignal_practice_simulator.errors import (
     CandidateFailureError,
     IllegalLifecycleError,
@@ -41,7 +42,7 @@ from codesignal_practice_simulator.persistence import (
     Persistence,
 )
 from codesignal_practice_simulator.scoring import IsolatedAttemptScorer
-from codesignal_practice_simulator.workspace import CACHE_INPUTS
+from codesignal_practice_simulator.workspace import CACHE_INPUTS, ValidatedFixtureCache
 
 
 CANONICAL_ATTEMPT = "123e4567-e89b-12d3-a456-426614174000"
@@ -234,6 +235,15 @@ class CliTests(unittest.TestCase):
         }
         self.assertIn("--format", context_options)
 
+    def test_default_application_uses_the_public_runtime_factory(self) -> None:
+        expected = RecordingApplication()
+        workspace_root = Path("temporary-workspace")
+
+        with patch.object(cli, "create_application", return_value=expected) as factory:
+            self.assertIs(cli._default_application(workspace_root), expected)
+
+        factory.assert_called_once_with(workspace_root)
+
     def test_console_adapter_and_module_help_are_identical(self) -> None:
         environment = os.environ | {"PYTHONPATH": str(PROJECT / "src")}
         for arguments in (["--help"], ["context", "--help"]):
@@ -411,7 +421,7 @@ class RuntimeCliTests(unittest.TestCase):
         self.project, self.cache = write_fixture_project(root)
         self.workspace = self.project
         self.clock = FakeClock()
-        self.runtime_cache = cli.ValidatedFixtureCache(
+        self.runtime_cache = ValidatedFixtureCache(
             self.cache,
             {
                 path.relative_to(self.cache).as_posix(): hashlib.sha256(
@@ -434,9 +444,9 @@ class RuntimeCliTests(unittest.TestCase):
         )
         return code, json.loads(output.getvalue())
 
-    def runtime_application(self, workspace_root: Path) -> cli._RuntimeApplication:
+    def runtime_application(self, workspace_root: Path) -> RuntimeApplication:
         """Use synthetic fixture bytes while exercising the production adapter."""
-        application = cli._RuntimeApplication(workspace_root, clock=self.clock)
+        application = RuntimeApplication(workspace_root, clock=self.clock)
         application.workspace.cache = self.runtime_cache
         return application
 
@@ -516,7 +526,7 @@ class RuntimeCliTests(unittest.TestCase):
                 output = io.StringIO()
                 code = cli.execute(
                     ["start", "--workspace-root", str(workspace), "--json"],
-                    application_factory=lambda workspace_root: cli._RuntimeApplication(
+                    application_factory=lambda workspace_root: RuntimeApplication(
                         workspace_root, clock=self.clock
                     ),
                     output=output,
