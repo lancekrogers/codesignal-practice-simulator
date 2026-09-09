@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 ATTEMPTS = ROOT / "attempts"
 SOLUTION = ROOT / "solution"
+SOLUTION_TESTS = ROOT / ".cache/codesignal-fixtures/6aab304/assessment/file_storage"
 
 LEVELS = (
     (1, "Initial design & basic functions", "10-15m"),
@@ -49,18 +51,27 @@ def resolve_target(raw: str | None) -> Path:
         target = found
     if not (target / "simulation.py").is_file():
         raise SystemExit(f"no simulation.py in {target}")
-    if not (target / "test_simulation.py").is_file():
-        raise SystemExit(f"no test_simulation.py in {target}")
+    tests = SOLUTION_TESTS if target == SOLUTION else target
+    if not (tests / "test_simulation.py").is_file():
+        raise SystemExit(f"no test_simulation.py in {tests}")
     return target
 
 
 def run_level(target: Path, level: int) -> tuple[bool, str]:
     """Run one level's test group. Returns (passed, first error line)."""
+    environment = None
+    if target == SOLUTION:
+        environment = {
+            **os.environ,
+            "PYTHONPATH": str(SOLUTION_TESTS),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
     completed = subprocess.run(
         [sys.executable, "-m", "unittest", f"{TEST_CLASS}.test_group_{level}"],
         cwd=target,
         capture_output=True,
         text=True,
+        env=environment,
     )
     if completed.returncode == 0:
         return True, ""

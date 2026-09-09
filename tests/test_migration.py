@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -18,6 +18,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from fetch_fixture import populate_fixture  # noqa: E402
 from fixture_contract import FixtureError, fixture_cache_path, read_manifest  # noqa: E402
+import scorecard  # noqa: E402
 from verify_manifest import (  # noqa: E402
     verify_fixture_cache,
     verify_git_boundary,
@@ -266,6 +267,44 @@ class ManifestVerifierTests(unittest.TestCase):
 
             with self.assertRaisesRegex(FixtureError, "HEAD: forbidden vendor path"):
                 verify_git_boundary(manifest_path, read_manifest(manifest_path))
+
+
+class ScorecardFixtureTests(unittest.TestCase):
+    def test_solution_uses_cached_tests_with_solution_as_the_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            cached_tests = Path(temporary_directory)
+            (cached_tests / "test_simulation.py").write_text("", encoding="utf-8")
+            completed = subprocess.CompletedProcess((), 0, "", "")
+
+            with (
+                patch.object(scorecard, "SOLUTION_TESTS", cached_tests),
+                patch.object(scorecard.subprocess, "run", return_value=completed) as run,
+            ):
+                self.assertEqual(
+                    scorecard.resolve_target(str(scorecard.SOLUTION)),
+                    scorecard.SOLUTION,
+                )
+                self.assertEqual(scorecard.run_level(scorecard.SOLUTION, 1), (True, ""))
+
+        self.assertEqual(run.call_args.kwargs["cwd"], scorecard.SOLUTION)
+        self.assertEqual(
+            run.call_args.kwargs["env"]["PYTHONPATH"], str(cached_tests)
+        )
+        self.assertEqual(run.call_args.kwargs["env"]["PYTHONDONTWRITEBYTECODE"], "1")
+
+    def test_attempt_uses_its_copied_tests(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            attempt = Path(temporary_directory).resolve()
+            (attempt / "simulation.py").write_text("", encoding="utf-8")
+            (attempt / "test_simulation.py").write_text("", encoding="utf-8")
+            completed = subprocess.CompletedProcess((), 0, "", "")
+
+            with patch.object(scorecard.subprocess, "run", return_value=completed) as run:
+                self.assertEqual(scorecard.resolve_target(str(attempt)), attempt)
+                self.assertEqual(scorecard.run_level(attempt, 1), (True, ""))
+
+        self.assertEqual(run.call_args.kwargs["cwd"], attempt)
+        self.assertIsNone(run.call_args.kwargs["env"])
 
 
 if __name__ == "__main__":
