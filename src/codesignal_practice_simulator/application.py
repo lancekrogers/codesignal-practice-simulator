@@ -10,6 +10,7 @@ from .assessments import (
     AssessmentDefinition,
     DEFAULT_ASSESSMENT_REGISTRY,
 )
+from .candidate_documents import CandidateDocumentService
 from .clock import Clock, UTCClock
 from .errors import FixtureSetupRequiredError, InvalidInputError
 from .evaluation import EvaluationService
@@ -76,6 +77,7 @@ class RuntimeApplication:
             self.clock,
             self._score_selected_attempt,
         )
+        self.candidate_documents = CandidateDocumentService(self.workspace, self.clock)
         self.evaluation = EvaluationService(self.lifecycle)
         self.prompts = PromptService(self.workspace)
         self.contexts = AttemptContextService(self.workspace)

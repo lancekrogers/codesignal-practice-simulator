@@ -357,6 +357,10 @@ class Persistence:
         """Atomically publish a pointer; the caller already owns its root lock."""
         self._atomic_json(attempts_directory / ACTIVE_FILENAME, pointer.to_dict())
 
+    def atomic_json(self, path: Path, value: object) -> None:
+        """Atomically write a JSON-safe value to a caller-owned path."""
+        self._atomic_json(path, value)
+
     def _read_model(self, path: Path, parser, label: str):
         try:
             decoded = json.loads(self.filesystem.read_bytes(path).decode("utf-8"))

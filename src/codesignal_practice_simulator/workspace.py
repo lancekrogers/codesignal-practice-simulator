@@ -16,6 +16,7 @@ from .assessments import (
     DEFAULT_ASSESSMENT_REGISTRY,
     FILE_STORAGE,
 )
+from .candidate_documents import write_initial_source_baseline
 from .errors import (
     FixtureSetupRequiredError,
     InvalidInputError,
@@ -400,6 +401,12 @@ class WorkspaceManager:
         with self.persistence.attempt_lock(staging):
             for filename in definition.copied_filenames:
                 self.filesystem.copyfile(source_directory / filename, staging / filename)
+            write_initial_source_baseline(
+                self.filesystem,
+                self.persistence,
+                staging,
+                filename=definition.candidate_filename,
+            )
             install_attempt_runner(
                 staging,
                 self.filesystem.write_bytes,
