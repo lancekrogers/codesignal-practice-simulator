@@ -2,9 +2,10 @@
 
 # Run the maintained simulator suite and reject whitespace errors.
 verify:
+    cd {{justfile_directory()}} && python3 scripts/run_legacy_checks.py
     cd {{justfile_directory()}} && {{python}} -m unittest discover -s tests -v
     cd {{justfile_directory()}} && {{python}} -m unittest tests.test_end_to_end -v
-    cd {{justfile_directory()}} && git diff --check HEAD
+    cd {{justfile_directory()}} && git diff --check
 
 # Deprecated post-attempt compatibility check against the fetched bundled test.
 # It is not a timed simulator command and requires the ignored fixture cache.

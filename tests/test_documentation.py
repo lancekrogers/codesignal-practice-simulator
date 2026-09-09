@@ -24,6 +24,8 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn("`full-90m`", readme)
         self.assertIn("`drill-30m`", readme)
         self.assertIn("canonical lowercase UUID takes precedence", readme)
+        self.assertIn("python3 scripts/run_legacy_checks.py", readme)
+        self.assertIn("It does not run the fetched\nupstream compatibility test.", readme)
         self.assertIn("0 (success), 2", readme)
         self.assertIn(
             "exits 5 only when `test` ran and one or more groups were non-passing",
@@ -88,7 +90,10 @@ class DocumentationTests(unittest.TestCase):
         self.assertNotIn("new_attempt.py", practice)
         self.assertNotIn("scorecard.py", practice)
         self.assertIn("verify:", verify)
+        self.assertIn("python3 scripts/run_legacy_checks.py", verify)
         self.assertIn("unittest discover -s tests -v", verify)
+        self.assertIn("unittest tests.test_end_to_end -v", verify)
+        self.assertIn("git diff --check", verify)
         self.assertIn("test-compat:", verify)
         self.assertIn("study-stages:", verify)
         self.assertIn("study-check", verify)

@@ -71,6 +71,19 @@ canonical lowercase UUID takes precedence over that pointer; the CLI never
 guesses from directory recency. The complete command, JSON, lifecycle, and
 exit contract is in [docs/cli-contract.md](docs/cli-contract.md).
 
+## Canonical local verification
+
+After `fetch` has populated the ignored fixture cache, run the migration and
+post-attempt compatibility checks directly:
+
+```sh
+python3 scripts/run_legacy_checks.py
+```
+
+This verifies the tracked mappings, cache hashes, and Git boundary before
+running the first-party solution and study checks. It does not run the fetched
+upstream compatibility test.
+
 ### Workspace layout
 
 ```text
