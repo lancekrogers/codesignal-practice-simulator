@@ -8,6 +8,9 @@ from .errors import InvalidInputError, SessionUnavailableError
 from .workspace import WorkspaceManager
 
 
+MAX_PROMPT_BYTES = 512 * 1024
+
+
 @dataclass(frozen=True, slots=True)
 class PromptResult:
     """The selected copied prompt, identified by its authoritative attempt."""
@@ -61,12 +64,20 @@ class PromptService:
                     f"selected level is unavailable: {level}"
                 )
             try:
-                text = prompt.read_text(encoding="utf-8")
+                with prompt.open("rb") as stream:
+                    raw = stream.read(MAX_PROMPT_BYTES + 1)
+                if len(raw) > MAX_PROMPT_BYTES:
+                    raise ValueError("prompt is too large")
+                text = raw.decode("utf-8")
             except (OSError, UnicodeDecodeError) as error:
+                raise SessionUnavailableError(
+                    f"cannot read selected level: {level}"
+                ) from error
+            except ValueError as error:
                 raise SessionUnavailableError(
                     f"cannot read selected level: {level}"
                 ) from error
             return PromptResult(state.attempt_id, level, text)
 
 
-__all__ = ["PromptResult", "PromptService"]
+__all__ = ["MAX_PROMPT_BYTES", "PromptResult", "PromptService"]

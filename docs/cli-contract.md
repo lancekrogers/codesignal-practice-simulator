@@ -89,8 +89,9 @@ codesignal-sim
 ├── task    [--json] [--workspace-root PATH] [--attempt UUID] --level {1,2,3,4}
 ├── test    [--json] [--workspace-root PATH] [--attempt UUID]
 ├── submit  [--json] [--workspace-root PATH] [--attempt UUID]
-└── context [--json] [--workspace-root PATH] [--attempt UUID]
+├── context [--json] [--workspace-root PATH] [--attempt UUID]
             [--format {markdown,json}]
+└── web     [--json] [--workspace-root PATH] [--port PORT] [--no-open]
 ```
 
 Common options are intentionally after the subcommand. `--workspace-root`
@@ -101,7 +102,13 @@ directory or guesses an attempt from a timestamp. `start --mode full` rejects
 `--drill-duration-seconds`, and every supplied duration must be positive.
 
 `fetch`, `start`, `resume`, `status`, `time`, `task`, `test`, `submit`, and
-`context` use production application adapters. `test` and `submit` use the
+`context` use production application adapters. `web` binds only to
+`127.0.0.1`, emits a capability URL whose token stays in the URL fragment, and
+blocks until stopped. Tokens are URL-safe ASCII capabilities carrying at least
+256 bits. `--no-open` suppresses the injectable browser opener. Browser
+evaluation responses include `newly_submitted`, which is true only for the
+request that first finalizes an attempt.
+`test` and `submit` use the
 attempt-local isolated scorer; selection is held only long enough to choose the
 attempt, while scoring holds only that attempt's lock. `context` reads only
 validated session state and a safe projection of event metadata; it never reads

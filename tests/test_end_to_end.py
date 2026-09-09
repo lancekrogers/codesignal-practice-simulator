@@ -674,8 +674,11 @@ def evaluate(group):
                 )
                 repeated = self._run(kind, workspace, "submit")
                 assert isinstance(repeated, subprocess.CompletedProcess)
-                self._document(repeated, 0)
-                self.assertEqual(repeated.stdout, submitted.stdout)
+                repeated_document = self._document(repeated, 0)
+                self.assertTrue(submitted_document["result"]["newly_submitted"])  # type: ignore[index]
+                self.assertFalse(repeated_document["result"]["newly_submitted"])  # type: ignore[index]
+                submitted_document["result"]["newly_submitted"] = repeated_document["result"]["newly_submitted"]  # type: ignore[index]
+                self.assertEqual(repeated_document, submitted_document)
                 self.assertEqual(
                     (
                         (attempt / "session.json").read_bytes(),
@@ -882,8 +885,11 @@ def evaluate(group):
         after_submit = (session_path.read_bytes(), (attempt / "events.jsonl").read_bytes())
         repeated = self._run("module", workspace, "submit", "--attempt", attempt_id)
         assert isinstance(repeated, subprocess.CompletedProcess)
-        self._document(repeated, 0)
-        self.assertEqual(repeated.stdout, submitted.stdout)
+        repeated_document = self._document(repeated, 0)
+        self.assertTrue(submitted_document["result"]["newly_submitted"])  # type: ignore[index]
+        self.assertFalse(repeated_document["result"]["newly_submitted"])  # type: ignore[index]
+        submitted_document["result"]["newly_submitted"] = repeated_document["result"]["newly_submitted"]  # type: ignore[index]
+        self.assertEqual(repeated_document, submitted_document)
         self.assertEqual((session_path.read_bytes(), (attempt / "events.jsonl").read_bytes()), after_submit)
 
 

@@ -25,6 +25,7 @@ from .errors import (
 from .lifecycle import SubmissionResult, TimeObservation
 from .models import SessionState
 from .rendering import ContextResult
+from .web.server import WebServer, WebServerConfig
 
 
 CLI_SCHEMA_VERSION = "cli/v1"
@@ -66,6 +67,7 @@ class CommandApplication(Protocol):
 
 ApplicationFactory = Callable[[Path], CommandApplication]
 ResultSerializer = Callable[[object], Mapping[str, object]]
+WebServerFactory = Callable[[WebServerConfig], WebServer]
 
 
 class _Parser(argparse.ArgumentParser):
@@ -126,6 +128,15 @@ def build_parser() -> argparse.ArgumentParser:
     task = commands.add_parser("task", help="show a selected attempt task")
     _add_common_options(task)
     task.add_argument("--level", type=_level, required=True)
+
+    web = commands.add_parser("web", help="serve the local browser assessment")
+    _add_common_options(web, attempt=False)
+    web.add_argument("--port", type=_port, default=0)
+    web.add_argument(
+        "--no-open",
+        action="store_true",
+        help="start the server without opening a browser window",
+    )
     return parser
 
 
@@ -135,6 +146,7 @@ def execute(
     application_factory: ApplicationFactory | None = None,
     serializer: ResultSerializer | None = None,
     output: TextIO | None = None,
+    web_server_factory: WebServerFactory | None = None,
 ) -> int:
     """Execute one parsed command through an injected application adapter."""
     arguments = list(sys.argv[1:] if argv is None else argv)
@@ -145,6 +157,12 @@ def execute(
         if namespace.command is None:
             raise InvalidInputError("a command is required")
         _validate_arguments(namespace)
+        if namespace.command == "web":
+            return _execute_web(
+                namespace,
+                output,
+                web_server_factory=web_server_factory,
+            )
         selected_application_factory = (
             _default_application
             if application_factory is None
@@ -201,7 +219,11 @@ def serialize_result(result: object) -> Mapping[str, object]:
             "remaining_seconds": result.remaining_seconds,
         }
     if isinstance(result, SubmissionResult):
-        return {"session": result.state.to_dict(), "score": result.score.to_dict()}
+        return {
+            "session": result.state.to_dict(),
+            "score": result.score.to_dict(),
+            "newly_submitted": result.newly_submitted,
+        }
     if isinstance(result, ContextResult):
         return result.to_dict()
     if isinstance(result, Mapping):
@@ -269,6 +291,44 @@ def _default_application(workspace_root: Path) -> RuntimeApplication:
     return create_application(workspace_root)
 
 
+def _execute_web(
+    namespace: argparse.Namespace,
+    output: TextIO,
+    *,
+    web_server_factory: WebServerFactory | None,
+) -> int:
+    factory = WebServer if web_server_factory is None else web_server_factory
+    server = factory(
+        WebServerConfig(
+            workspace_root=namespace.workspace_root,
+            port=namespace.port,
+            no_open=namespace.no_open,
+        )
+    )
+    try:
+        url = server.start()
+        document = _success_document({"url": url, "port": server.port})
+        _write_document(output, document, json_requested=namespace.json)
+        output.flush()
+        if not namespace.no_open:
+            open_browser = getattr(server, "open_browser", None)
+            if callable(open_browser):
+                open_browser()
+        server.wait()
+        return 0
+    except KeyboardInterrupt:
+        return 0
+    except Exception:
+        _write_document(
+            output,
+            _error_document("internal_error", "web server could not be started safely"),
+            json_requested=namespace.json,
+        )
+        return int(ExitCode.INVALID_INPUT)
+    finally:
+        server.stop()
+
+
 def _serialize_document(
     serializer: ResultSerializer, result: object
 ) -> Mapping[str, object]:
@@ -305,6 +365,16 @@ def _positive_integer(value: str) -> int:
         raise argparse.ArgumentTypeError("must be a positive integer") from error
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _port(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("port must be between 0 and 65535") from error
+    if parsed < 0 or parsed > 65535:
+        raise argparse.ArgumentTypeError("port must be between 0 and 65535")
     return parsed
 
 
@@ -368,6 +438,7 @@ __all__ = [
     "ApplicationFactory",
     "CommandApplication",
     "ResultSerializer",
+    "WebServerFactory",
     "build_parser",
     "execute",
     "main",

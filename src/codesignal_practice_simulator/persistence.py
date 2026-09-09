@@ -340,6 +340,8 @@ class Persistence:
     def read_active_pointer(self, attempts_directory: Path) -> ActivePointer | None:
         """Read the versioned selection pointer, returning ``None`` when absent."""
         path = attempts_directory / ACTIVE_FILENAME
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise SessionCorruptError(f"active pointer is unsafe: {path}")
         if not path.exists():
             return None
         return self._read_model(path, ActivePointer.from_dict, "active pointer")

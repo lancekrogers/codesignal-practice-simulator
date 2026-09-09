@@ -1,0 +1,14 @@
+{
+  "index.html": {
+    "media_type": "text/html; charset=utf-8",
+    "cache_control": "no-store"
+  },
+  "app.js": {
+    "media_type": "text/javascript; charset=utf-8",
+    "cache_control": "no-store"
+  },
+  "styles.css": {
+    "media_type": "text/css; charset=utf-8",
+    "cache_control": "no-store"
+  }
+}

@@ -187,6 +187,25 @@ class RecordingApplication:
         return adapter
 
 
+class RecordingWebServer:
+    def __init__(self, config) -> None:
+        self.config = config
+        self.stopped = False
+
+    @property
+    def port(self) -> int:
+        return 43210
+
+    def start(self) -> str:
+        return "http://127.0.0.1:43210/#token=test"
+
+    def wait(self) -> None:
+        return
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
 class CliTests(unittest.TestCase):
     def execute(
         self,
@@ -221,12 +240,13 @@ class CliTests(unittest.TestCase):
                 "test",
                 "submit",
                 "context",
+                "web",
             },
         )
         for name, command in commands.items():
             options = {option for action in command._actions for option in action.option_strings}
             self.assertTrue({"--json", "--workspace-root"} <= options, name)
-            if name in ("fetch", "start"):
+            if name in ("fetch", "start", "web"):
                 self.assertNotIn("--attempt", options)
             else:
                 self.assertIn("--attempt", options)
@@ -243,6 +263,37 @@ class CliTests(unittest.TestCase):
             self.assertIs(cli._default_application(workspace_root), expected)
 
         factory.assert_called_once_with(workspace_root)
+
+    def test_web_command_uses_injected_server_and_returns_capability_url(self) -> None:
+        created: list[RecordingWebServer] = []
+
+        def factory(config):
+            server = RecordingWebServer(config)
+            created.append(server)
+            return server
+
+        output = io.StringIO()
+        code = cli.execute(
+            [
+                "web",
+                "--json",
+                "--workspace-root",
+                "sandbox",
+                "--port",
+                "0",
+                "--no-open",
+            ],
+            application_factory=lambda _root: (_ for _ in ()).throw(
+                AssertionError("web must not construct the CLI application")
+            ),
+            output=output,
+            web_server_factory=factory,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output.getvalue())["result"]["port"], 43210)
+        self.assertTrue(created[0].stopped)
+        self.assertEqual(created[0].config.host, "127.0.0.1")
+        self.assertTrue(created[0].config.no_open)
 
     def test_console_adapter_and_module_help_are_identical(self) -> None:
         environment = os.environ | {"PYTHONPATH": str(PROJECT / "src")}
@@ -871,7 +922,14 @@ class RuntimeCliTests(unittest.TestCase):
         self.assertEqual((first_code, second_code), (0, 0))
         self.assertEqual(invalid_test_code, 4)
         self.assertEqual(invalid_test["error"]["code"], "illegal_lifecycle")  # type: ignore[index]
-        self.assertEqual(first, second)
+        first_document = json.loads(first)
+        second_document = json.loads(second)
+        self.assertTrue(first_document["result"]["newly_submitted"])
+        self.assertFalse(second_document["result"]["newly_submitted"])
+        first_document["result"]["newly_submitted"] = second_document["result"][
+            "newly_submitted"
+        ]
+        self.assertEqual(first_document, second_document)
         self.assertEqual(file_bytes(attempt), bytes_after_first)
         score_attempt.assert_called_once()
         self.assertEqual(self.event_names(attempt), ["started", "submitted"])
@@ -930,6 +988,9 @@ class RuntimeCliTests(unittest.TestCase):
             )
 
         self.assertEqual((recovered_code, repeated_code), (0, 0))
+        self.assertTrue(recovered["result"]["newly_submitted"])  # type: ignore[index]
+        self.assertFalse(repeated["result"]["newly_submitted"])  # type: ignore[index]
+        recovered["result"]["newly_submitted"] = repeated["result"]["newly_submitted"]  # type: ignore[index]
         self.assertEqual(recovered, repeated)
         self.assertEqual(file_bytes(attempt), after_recovery)
         score_attempt.assert_called_once()

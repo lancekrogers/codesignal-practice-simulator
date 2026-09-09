@@ -1,0 +1,21 @@
+:root {
+  color-scheme: light;
+  font: 16px/1.5 system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #f4f1ea;
+  color: #20252b;
+}
+
+main {
+  box-sizing: border-box;
+  max-width: 48rem;
+  margin: 12vh auto;
+  padding: 2rem;
+  background: #fffdf8;
+  border: 1px solid #d7d0c4;
+  border-radius: 0.75rem;
+  box-shadow: 0 0.5rem 2rem #332b2014;
+}
