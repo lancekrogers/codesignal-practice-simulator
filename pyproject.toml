@@ -14,3 +14,6 @@ codesignal-sim = "codesignal_practice_simulator.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+codesignal_practice_simulator = ["resources/*.json"]

@@ -15,7 +15,7 @@ outside the scoring group; it is not a general security sandbox.
 
 ## Live-session boundary
 
-Before acting, inspect `codesignal-sim context` or generated `STATUS.md`.
+Before acting, inspect generated `STATUS.md`.
 Those views are derived from validated `session.json` and `events.jsonl`; they
 are non-authoritative and never contain candidate source, answer-bearing test
 output, or reference content.

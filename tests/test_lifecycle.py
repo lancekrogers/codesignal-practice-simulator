@@ -10,6 +10,7 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT / "src"))
@@ -154,6 +155,24 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(observed.remaining_seconds, FULL_DURATION_SECONDS - 30)
         self.assertEqual(durable_bytes(attempt), before)
 
+    def test_locked_state_read_rejects_a_registry_mismatch(self) -> None:
+        state, attempt = self.start()
+        replaced = replace(
+            state,
+            assessment=AssessmentMetadata("removed_assessment", "Removed Assessment"),
+        )
+        with patch.object(
+            self.manager.persistence,
+            "read_session",
+            return_value=replaced,
+        ):
+            with self.assertRaisesRegex(
+                SessionCorruptError, "assessment is not registered"
+            ):
+                self.service.status()
+
+        self.assertTrue(attempt.exists())
+
     def test_first_overdue_status_observer_persists_exactly_one_expiry(self) -> None:
         state, attempt = self.start()
         self.clock.value = state.deadline_at
@@ -188,11 +207,31 @@ class LifecycleTests(unittest.TestCase):
     def test_test_runs_injected_scorer_then_records_result(self) -> None:
         state, attempt = self.start()
 
-        recorded = self.service.test()
+        with patch.object(
+            self.manager.persistence,
+            "workspace_lock",
+            wraps=self.manager.persistence.workspace_lock,
+        ) as workspace_lock:
+            recorded = self.service.test()
 
         self.assertEqual(recorded.revision, state.revision + 1)
         self.assertEqual(recorded.score, score())
         self.assertEqual(self.scorer.calls, [attempt])
+        workspace_lock.assert_not_called()
+
+    def test_submit_runs_its_scorer_without_the_workspace_lock(self) -> None:
+        _state, attempt = self.start()
+
+        with patch.object(
+            self.manager.persistence,
+            "workspace_lock",
+            wraps=self.manager.persistence.workspace_lock,
+        ) as workspace_lock:
+            submitted = self.service.submit()
+
+        self.assertEqual(submitted.state.attempt_id, attempt.name)
+        self.assertEqual(self.scorer.calls, [attempt])
+        workspace_lock.assert_not_called()
 
     def test_expired_resume_and_test_are_exit_four_and_byte_identical(self) -> None:
         state, attempt = self.start()

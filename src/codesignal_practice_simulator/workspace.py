@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from .assessments import (
+    AssessmentDefinition,
     AssessmentRegistry,
     DEFAULT_ASSESSMENT_REGISTRY,
     FILE_STORAGE,
@@ -20,8 +23,8 @@ from .errors import (
     SessionUnavailableError,
 )
 from .filesystem import Filesystem, LocalFilesystem
+from .fixture_setup import FixtureSetupError, load_runtime_manifest, runtime_cache_root
 from .models import ACTIVE_POINTER_SCHEMA_VERSION, ActivePointer, SessionState
-from .rendering import refresh_status
 from .persistence import ACTIVE_FILENAME, Persistence, initial_event
 from .scoring import install_attempt_runner
 
@@ -44,7 +47,7 @@ Do not put candidate code, test output, or answers here.
 """
 _AGENTS = """# Live attempt instructions
 
-Read `codesignal-sim context` or `STATUS.md` before acting.
+Read the generated `STATUS.md` before acting.
 
 - Edit `COACHING.md` by default. It is candidate-owned, non-executable text.
 - Read or edit candidate code only after an explicit candidate request.
@@ -82,7 +85,32 @@ class ValidatedFixtureCache:
             ) from error
         if not isinstance(cache_relative, str) or not isinstance(fetches, list):
             raise FixtureSetupRequiredError("fixture setup is required: invalid manifest")
+        project_root = manifest_path.resolve().parent.parent
+        root = (project_root / cache_relative).resolve()
+        if root != project_root and project_root not in root.parents:
+            raise FixtureSetupRequiredError("fixture setup is required: cache escapes project")
+        return cls._from_fetches(root, fetches)
 
+    @classmethod
+    def from_runtime_manifest(cls, workspace_root: Path) -> ValidatedFixtureCache:
+        """Build a wheel-safe cache contract from packaged non-vendor metadata."""
+        try:
+            manifest = load_runtime_manifest()
+            root = runtime_cache_root(workspace_root, manifest)
+            fetches = manifest["fetches"]
+        except (FixtureSetupError, KeyError, TypeError) as error:
+            raise FixtureSetupRequiredError(
+                "fixture setup is required: installed fixture metadata is invalid"
+            ) from error
+        return cls._from_fetches(root, fetches)
+
+    @classmethod
+    def _from_fetches(
+        cls, root: Path, fetches: object
+    ) -> ValidatedFixtureCache:
+        """Validate the seven cache records shared by source and wheel manifests."""
+        if not isinstance(fetches, list):
+            raise FixtureSetupRequiredError("fixture setup is required: invalid manifest")
         hashes: dict[str, str] = {}
         for record in fetches:
             if not isinstance(record, dict):
@@ -98,15 +126,10 @@ class ValidatedFixtureCache:
             ):
                 raise FixtureSetupRequiredError("fixture setup is required: invalid manifest")
             hashes[path] = digest
-
         if set(hashes) != _EXPECTED_CACHE_PATHS:
             raise FixtureSetupRequiredError(
                 "fixture setup is required: manifest does not define seven cache records"
             )
-        project_root = manifest_path.resolve().parent.parent
-        root = (project_root / cache_relative).resolve()
-        if root != project_root and project_root not in root.parents:
-            raise FixtureSetupRequiredError("fixture setup is required: cache escapes project")
         return cls(root=root, hashes=hashes)
 
     def validate(self, filesystem: Filesystem) -> None:
@@ -182,7 +205,8 @@ class WorkspaceManager:
 
     @property
     def attempts_directory(self) -> Path:
-        return self.workspace_root / ATTEMPTS_DIRECTORY
+        """Return the only safe root for workspace-owned mutations."""
+        return self._validated_attempts_directory()
 
     def create_attempt(
         self, state: SessionState, *, interrupt_after_publish: bool = False
@@ -237,6 +261,31 @@ class WorkspaceManager:
     def resolve_attempt(self, explicit_attempt_id: str | None = None) -> Path:
         """Resolve explicit selection first, otherwise the validated active pointer."""
         attempts = self.attempts_directory
+        attempt = self._select_attempt_path(attempts, explicit_attempt_id)
+        self._definition_for_persisted_session(self.persistence.read_session(attempt))
+        return attempt
+
+    @contextmanager
+    def selected_attempt(self, explicit_attempt_id: str | None = None) -> Iterator[Path]:
+        """Lock workspace selection and the selected attempt as one operation.
+
+        The project lock order is workspace then attempt.  Holding both locks
+        prevents an active-pointer update from changing an implicit selection
+        before a caller has read that selected attempt's session or prompt.
+        """
+        attempts = self.attempts_directory
+        if not attempts.exists():
+            # Read-only commands must not create a lock file merely to report
+            # that no selection can exist yet.
+            self._select_attempt_path(attempts, explicit_attempt_id)
+        with self.persistence.workspace_lock(attempts):
+            attempt = self._select_attempt_path(attempts, explicit_attempt_id)
+            with self.persistence.attempt_lock(attempt):
+                yield attempt
+
+    def _select_attempt_path(
+        self, attempts: Path, explicit_attempt_id: str | None
+    ) -> Path:
         if explicit_attempt_id is not None:
             attempt_id = self._require_attempt_id(explicit_attempt_id)
         else:
@@ -249,8 +298,60 @@ class WorkspaceManager:
         attempt = attempts / attempt_id
         if not attempt.is_dir() or attempt.is_symlink():
             raise SessionUnavailableError(f"selected attempt is unavailable: {attempt_id}")
-        self.persistence.read_session(attempt)
         return attempt
+
+    def definition_for_persisted_session(
+        self, state: SessionState
+    ) -> AssessmentDefinition:
+        """Validate persisted registry references before a caller uses them.
+
+        Registry lookup failures caused by saved session data are corruption,
+        not invalid command input.  Keeping this conversion at the workspace
+        boundary makes every lifecycle command report the same safe exit.
+        """
+        if not isinstance(state, SessionState):
+            raise SessionCorruptError("selected attempt has an invalid session")
+        return self._definition_for_persisted_session(state)
+
+    def _validated_attempts_directory(self) -> Path:
+        """Return the real attempts root only when it cannot reach the cache.
+
+        ``Path.resolve()`` deliberately follows existing symlink ancestors and
+        a final ``attempts`` symlink.  The comparison is symmetric because a
+        writable attempts root is unsafe both inside the cache and around it.
+        """
+        attempts = self.workspace_root / ATTEMPTS_DIRECTORY
+        try:
+            resolved_attempts = attempts.resolve()
+            resolved_cache = self.cache.root.resolve()
+        except OSError as error:
+            raise InvalidInputError("attempts directory must be a valid path") from error
+        if _paths_overlap(resolved_attempts, resolved_cache):
+            raise InvalidInputError(
+                "attempts directory must not overlap the fixture cache"
+            )
+        if attempts.exists() and (not attempts.is_dir() or attempts.is_symlink()):
+            raise InvalidInputError("attempts directory must be a non-symlink directory")
+        return attempts
+
+    def _definition_for_persisted_session(
+        self, state: SessionState
+    ) -> AssessmentDefinition:
+        try:
+            definition = self.registry.require(state.assessment.assessment_id)
+        except InvalidInputError as error:
+            raise SessionCorruptError(
+                "selected attempt assessment is not registered"
+            ) from error
+        if state.assessment != definition.metadata:
+            raise SessionCorruptError(
+                "selected attempt assessment does not match the registry"
+            )
+        if not definition.supports_profile(state.profile.profile_id):
+            raise SessionCorruptError(
+                "selected attempt profile is not supported by its assessment"
+            )
+        return definition
 
     def _populate_staging(self, staging: Path, state: SessionState, token: str) -> None:
         definition = self.registry.require(state.assessment.assessment_id)
@@ -280,11 +381,6 @@ class WorkspaceManager:
                     separators=(",", ":"),
                 )
                 + "\n",
-            )
-            refresh_status(
-                staging,
-                self.persistence,
-                filesystem=self.filesystem,
             )
             self._write_flushed(
                 staging / CREATION_MARKER,
@@ -382,6 +478,11 @@ class WorkspaceManager:
 class _CreationMarker:
     attempt_id: str
     creation_token: str
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    """Return whether either resolved path contains the other."""
+    return left == right or left in right.parents or right in left.parents
 
 
 __all__ = [

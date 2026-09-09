@@ -1,7 +1,8 @@
 # File storage interview drill
 
-This directory is a separate study track. It treats the assessment as one
-program that grows four times, not as a system to architect up front.
+This is a post-attempt study track, not a timed simulator. It treats the
+exercise as one program that grows four times, not as a system to architect up
+front. Do not use its staged answers or explanations during a timed attempt.
 
 ## Use it today
 
@@ -9,12 +10,16 @@ Do not memorize the finished Level 4 file. Practice making the next small
 change while keeping the previous tests green.
 
 1. Copy `starter.py` to `scratch.py`.
-2. Read only `../assessment/file_storage/level1.md`.
-3. Write Level 1 without looking at the answer.
-4. Run `python check.py 1 scratch.py`.
-5. Compare with `level1.py`, fix your version, then continue to Level 2.
-6. Repeat until `python check.py 4 scratch.py` passes.
-7. Delete `scratch.py` and do one more run from memory.
+2. Choose one staged checkpoint and write it without looking at that answer.
+3. Run `python check.py 1 scratch.py` (or levels 2 through 4).
+4. Compare with `level1.py`, fix your version, then continue to the next level.
+5. Delete `scratch.py` and do one more run from memory.
+
+From the repository root, the matching post-attempt helper is:
+
+```bash
+just study-check 1 scratch.py
+```
 
 Use the project virtual environment if `python` is unavailable:
 

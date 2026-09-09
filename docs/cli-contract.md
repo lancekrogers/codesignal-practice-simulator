@@ -56,9 +56,104 @@ attempt lock and is paired with exactly one event by persistence services.
 | --- | --- |
 | 0 | Command completed, including expired `status`/`time` and repeat `submit`. |
 | 2 | Invalid input, including malformed identifiers, unsupported schemas, invalid profiles, or invalid durations. |
-| 3 | Session unavailable or corrupt, including no valid active pointer or malformed persisted state. |
+| 3 | Session unavailable or corrupt, including no valid active pointer, malformed persisted state, or a saved assessment that no longer matches the registry. |
 | 4 | Illegal lifecycle operation or lock contention. |
 | 5 | Candidate tests ran and at least one level group did not pass. |
 
 Expected domain errors are rendered as safe structured errors in `--json` mode
 and safe messages for people; command adapters do not expose tracebacks.
+
+## Command surface
+
+Both entry points use one `argparse` parser:
+
+```text
+codesignal-sim
+├── fetch   [--json] [--workspace-root PATH] [--source PATH]
+├── start   [--json] [--workspace-root PATH]
+│           [--assessment ID] [--mode {full,drill}]
+│           [--drill-duration-seconds SECONDS]
+├── resume  [--json] [--workspace-root PATH] [--attempt UUID]
+├── status  [--json] [--workspace-root PATH] [--attempt UUID]
+├── time    [--json] [--workspace-root PATH] [--attempt UUID]
+├── task    [--json] [--workspace-root PATH] [--attempt UUID] --level {1,2,3,4}
+├── test    [--json] [--workspace-root PATH] [--attempt UUID]
+├── submit  [--json] [--workspace-root PATH] [--attempt UUID]
+└── context [--json] [--workspace-root PATH] [--attempt UUID]
+```
+
+Common options are intentionally after the subcommand. `--workspace-root`
+defaults to the current working directory. `--attempt` must be a canonical,
+lowercase UUID. An explicit `--attempt` is passed to the application adapter
+and takes precedence over the active pointer; the CLI never selects the newest
+directory or guesses an attempt from a timestamp. `start --mode full` rejects
+`--drill-duration-seconds`, and every supplied duration must be positive.
+
+`fetch`, `start`, `resume`, `status`, `time`, and `task` use the production
+application adapter. `test`, `submit`, and `context` remain unavailable until
+their later runtime adapters are configured. The wheel includes a small,
+first-party runtime manifest containing only the seven fetch paths and hashes;
+it contains no upstream fixture bytes. It stores the fetched, ignored cache at
+`.cache/codesignal-fixtures/6aab304/` under `--workspace-root`, so installed
+commands do not depend on a source checkout. `fetch --source PATH` accepts a
+complete offline tree with the declared upstream paths.
+
+The workspace manager resolves the actual `attempts/` destination before it
+locks or writes. It rejects an `attempts` symlink, symlink ancestors that land
+in the cache, and either direction of cache/attempts containment. This guard
+also runs before fixture setup or a selected attempt can be used by a mutating
+operation.
+
+Before `start` creates any workspace path, it validates the complete
+seven-record fixture cache. A missing or invalid cache returns exit 3 with an
+actionable repair command:
+
+```sh
+codesignal-sim fetch --workspace-root PATH
+```
+
+It fetches and validates fixture material; do not replace cache files by hand.
+`start --mode full` persists the fixed `full-90m` 5,400-second profile. `start
+--mode drill` persists the named `drill-30m` profile and its supplied positive
+duration (or 1,800 seconds by default).
+
+`status` and `time` observe an overdue active attempt, atomically persist its
+single `expired` transition, then return successful expired output. A final
+(`expired` or `submitted`) attempt causes `resume` to exit 4 without mutation.
+After a successful command the adapter may refresh the derived `STATUS.md`
+through the renderer while holding the attempt lock, so a slow refresh cannot
+replace it with an older concurrent lifecycle snapshot. A renderer failure
+never rolls back or changes durable lifecycle state.
+
+`task --level N` reads only the selected attempt's copied `levelN.md`. It
+validates the selected attempt's registry metadata and level before reading,
+does not fall back to a cache file, and never reads solution or study material.
+An unavailable copied level is exit 3; an invalid level syntax is exit 2.
+
+## Output envelopes
+
+Every command result is wrapped in the versioned `cli/v1` envelope. Human
+output uses the same version and error code, while JSON is suitable for
+automation:
+
+```json
+{"ok":true,"result":{"session":{"attempt_id":"...","status":"active"}},"schema_version":"cli/v1"}
+```
+
+```json
+{"error":{"code":"invalid_input","message":"attempt ID must be a canonical UUID"},"ok":false,"schema_version":"cli/v1"}
+```
+
+The equivalent human error is:
+
+```text
+[cli/v1] error (invalid_input): attempt ID must be a canonical UUID
+```
+
+Error codes follow the stable exit table: `invalid_input` (2),
+`session_unavailable` (3), `illegal_lifecycle` (4), and
+`candidate_failure` (5). Parser errors, malformed selectors/paths, invalid
+option combinations, serializer failures, and unexpected adapter exceptions
+produce a safe error envelope with no traceback and no CLI-owned mutation.
+Serializer and unexpected-adapter failures use exit 2 with
+`serialization_failed` and `internal_error`, respectively.

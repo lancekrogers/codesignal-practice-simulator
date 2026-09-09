@@ -15,6 +15,7 @@ from uuid import uuid4
 from .errors import SessionUnavailableError
 from .filesystem import Filesystem, LocalFilesystem
 from .models import ACTIVE, EXPIRED, SUBMITTED, EventRecord, SessionState
+from .workspace import WorkspaceManager
 
 
 STATUS_FILENAME = "STATUS.md"
@@ -46,6 +47,30 @@ class AttemptContext:
             revisions.add(event.revision)
         if self.state.revision not in revisions:
             _unavailable()
+
+
+class DerivedStatusService:
+    """Best-effort writer for the generated status of one known attempt."""
+
+    def __init__(self, workspace: WorkspaceManager) -> None:
+        self.workspace = workspace
+
+    def refresh(self, attempt_id: str) -> AttemptContext | None:
+        """Refresh derived status without changing lifecycle command outcomes.
+
+        ``selected_attempt`` holds the workspace lock before the attempt lock.
+        That keeps the read-render-replace sequence ordered with lifecycle
+        writes, so a stale context cannot replace a newer generated status.
+        """
+        try:
+            with self.workspace.selected_attempt(attempt_id) as attempt:
+                return refresh_status(
+                    attempt,
+                    self.workspace.persistence,
+                    filesystem=self.workspace.filesystem,
+                )
+        except Exception:
+            return None
 
 
 def load_attempt_context(attempt: Path, persistence) -> AttemptContext:
@@ -196,19 +221,15 @@ def _score_document(state: SessionState) -> dict[str, object]:
 def _next_legal_commands(state: SessionState) -> list[str]:
     prefix = "codesignal-sim"
     selected = f"--attempt {state.attempt_id}"
-    commands = [f"{prefix} context {selected}", f"{prefix} status {selected}"]
+    commands = [f"{prefix} status {selected}"]
     if state.status == ACTIVE:
         commands.extend(
             (
                 f"{prefix} resume {selected}",
                 f"{prefix} time {selected}",
-                f"{prefix} test {selected}",
-                f"{prefix} submit {selected}",
             )
         )
-    elif state.status == EXPIRED:
-        commands.append(f"{prefix} submit {selected}")
-    elif state.status != SUBMITTED:
+    elif state.status not in (EXPIRED, SUBMITTED):
         _unavailable()
     return commands
 
@@ -227,6 +248,7 @@ def _unavailable() -> None:
 __all__ = [
     "AttemptContext",
     "CONTEXT_SCHEMA_VERSION",
+    "DerivedStatusService",
     "SESSION_UNAVAILABLE_MESSAGE",
     "STATUS_FILENAME",
     "load_attempt_context",

@@ -9,12 +9,14 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT / "src"))
 
-from codesignal_practice_simulator.errors import SessionUnavailableError
+from codesignal_practice_simulator import rendering
+from codesignal_practice_simulator.errors import LockUnavailableError, SessionUnavailableError
 from codesignal_practice_simulator.filesystem import LocalFilesystem
 from codesignal_practice_simulator.lifecycle import LifecycleService
 from codesignal_practice_simulator.models import (
@@ -30,6 +32,7 @@ from codesignal_practice_simulator.models import (
     SessionState,
 )
 from codesignal_practice_simulator.rendering import (
+    DerivedStatusService,
     SESSION_UNAVAILABLE_MESSAGE,
     load_attempt_context,
     refresh_status,
@@ -115,6 +118,7 @@ class RenderingTests(unittest.TestCase):
         self.reference.write_text("reference answer must not change\n", encoding="utf-8")
         self.workspace = WorkspaceManager(root / "workspace", self.cache)
         self.attempt = self.workspace.create_attempt(state())
+        refresh_status(self.attempt, self.workspace.persistence)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -160,9 +164,16 @@ class RenderingTests(unittest.TestCase):
         )
         self.assertEqual(document["score"]["levels"], [])
         self.assertEqual(
-            document["next_legal_commands"][-1],
-            f"codesignal-sim submit --attempt {self.attempt.name}",
+            document["next_legal_commands"],
+            [
+                f"codesignal-sim status --attempt {self.attempt.name}",
+                f"codesignal-sim resume --attempt {self.attempt.name}",
+                f"codesignal-sim time --attempt {self.attempt.name}",
+            ],
         )
+        self.assertNotIn("codesignal-sim context", markdown)
+        self.assertNotIn("codesignal-sim test", markdown)
+        self.assertNotIn("codesignal-sim submit", markdown)
         for forbidden in (
             "candidate source must not render",
             "answer-bearing test output",
@@ -213,6 +224,57 @@ class RenderingTests(unittest.TestCase):
         self.assertEqual(
             refreshed,
             render_markdown(load_attempt_context(self.attempt, self.workspace.persistence)),
+        )
+
+    def test_derived_status_is_best_effort_and_does_not_reject_lifecycle_results(self) -> None:
+        service = DerivedStatusService(self.workspace)
+        durable_before = (
+            (self.attempt / "session.json").read_bytes(),
+            (self.attempt / "events.jsonl").read_bytes(),
+        )
+
+        with patch.object(rendering, "refresh_status", side_effect=RuntimeError):
+            self.assertIsNone(service.refresh(self.attempt.name))
+
+        self.assertEqual(
+            (
+                (self.attempt / "session.json").read_bytes(),
+                (self.attempt / "events.jsonl").read_bytes(),
+            ),
+            durable_before,
+        )
+
+    def test_derived_status_cannot_replace_newer_lifecycle_state(self) -> None:
+        score = ScoreSummary(
+            tuple(LevelResult(level, "passed") for level in range(1, 5))
+        )
+        lifecycle = LifecycleService(self.workspace, FakeClock())
+        service = DerivedStatusService(self.workspace)
+        original_write_status = rendering.write_status
+        lifecycle_write_blocked = False
+
+        def write_status_after_attempted_transition(*args: object, **kwargs: object) -> None:
+            nonlocal lifecycle_write_blocked
+            try:
+                lifecycle.record_test_result(score, self.attempt.name)
+            except LockUnavailableError:
+                lifecycle_write_blocked = True
+            original_write_status(*args, **kwargs)
+
+        with patch.object(
+            rendering, "write_status", side_effect=write_status_after_attempted_transition
+        ):
+            refreshed = service.refresh(self.attempt.name)
+
+        self.assertIsNotNone(refreshed)
+        self.assertTrue(lifecycle_write_blocked)
+        self.assertEqual(self.workspace.persistence.read_session(self.attempt).revision, 0)
+
+        lifecycle.record_test_result(score, self.attempt.name)
+        service.refresh(self.attempt.name)
+        self.assertIn(
+            "- Passed levels: 4 of 4",
+            (self.attempt / "STATUS.md").read_text(encoding="utf-8"),
         )
 
     def test_coaching_and_regenerated_status_preserve_candidate_state_cache_and_reference(self) -> None:
@@ -276,7 +338,6 @@ class RenderingTests(unittest.TestCase):
 
         self.assertIn("candidate-owned, non-executable", coaching.lower())
         for required in (
-            "context",
             "STATUS.md",
             "COACHING.md",
             "explicit candidate request",
@@ -285,6 +346,7 @@ class RenderingTests(unittest.TestCase):
             "operational policy, not a security sandbox",
         ):
             self.assertIn(required, instructions)
+        self.assertNotIn("codesignal-sim context", instructions)
 
 
 if __name__ == "__main__":

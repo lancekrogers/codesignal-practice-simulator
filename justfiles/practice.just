@@ -1,67 +1,41 @@
-# ── Timed practice ─────────────────────────────────────────────────────────
-# A run mirrors the real assessment: 90 minutes, levels in order, partial
-# credit for every level you finish.
+# ── Timed simulator ─────────────────────────────────────────────────────────
+# These recipes use the versioned `codesignal-sim` attempt/session layout.
 
-# Install the local simulator. Fetching the untracked assessment is a separate,
-# explicit step because upstream material is FETCH_ONLY.
+# Install the local simulator. FETCH_ONLY material is fetched separately.
 setup:
     {{python}} -m pip install -e {{justfile_directory()}}
 
 # Fetch the seven pinned assessment files into the ignored fixture cache.
 fetch:
-    {{python}} {{scripts}}/fetch_fixture.py --manifest {{justfile_directory()}}/docs/migration-manifest.json
+    codesignal-sim fetch --workspace-root {{justfile_directory()}}
 
-# Start a new timed attempt (90 minutes by default)
-practice minutes="90":
-    @{{python}} {{scripts}}/new_attempt.py --minutes {{minutes}}
+# Start a new 90-minute attempt with a UUID directory and session.json.
+practice:
+    codesignal-sim start --workspace-root {{justfile_directory()}}
 
-# Score every level of the current attempt
-score:
-    @-{{python}} {{scripts}}/scorecard.py
+# Start a drill with an explicit persisted duration.
+practice-drill seconds="1800":
+    codesignal-sim start --workspace-root {{justfile_directory()}} --mode drill --drill-duration-seconds {{seconds}}
 
-# Score a single level of the current attempt
-level n:
-    @-{{python}} {{scripts}}/scorecard.py --level {{n}}
+# Resume the selected active attempt.
+resume:
+    codesignal-sim resume --workspace-root {{justfile_directory()}}
 
-# Full unittest output for one level (use when `just level n` says FAIL)
-debug n:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    dir="$({{python}} {{scripts}}/scorecard.py --print-dir)"
-    cd "$dir"
-    # A failing test is the point of this recipe; don't add a just error banner.
-    {{python}} -m unittest -v test_simulation.TestSimulateCodingFramework.test_group_{{n}} || true
+# Show the selected attempt's derived status and remaining time.
+status:
+    codesignal-sim status --workspace-root {{justfile_directory()}}
 
-# Time remaining in the current attempt
 time:
-    @{{python}} {{scripts}}/scorecard.py --time-only
+    codesignal-sim time --workspace-root {{justfile_directory()}}
 
-# Stop the clock: score, then write RESULT.md into the attempt
-submit:
-    @-{{python}} {{scripts}}/scorecard.py --submit
-
-# Print the current attempt directory
-where:
-    @{{python}} {{scripts}}/scorecard.py --print-dir
-
-# Read a level's task description
+# Read only the copied prompt from the selected attempt.
 task n="1":
-    @cat {{assessment}}/level{{n}}.md
+    codesignal-sim task --workspace-root {{justfile_directory()}} --level {{n}}
 
-# List past attempts, newest first
+# List UUID attempt directories. active.json selects the current one.
 attempts:
     #!/usr/bin/env bash
     set -euo pipefail
-    found=0
-    for name in $(ls -1 attempts 2>/dev/null | sort -r); do
-        dir="attempts/$name"
-        [ -d "$dir" ] || continue
-        found=1
-        if [ -f "$dir/RESULT.md" ]; then
-            score="$(sed -n 's/^- Levels passed: //p' "$dir/RESULT.md" | head -1)"
-            printf '  %-34s %s\n' "$name" "$score"
-        else
-            printf '  %-34s (unsubmitted)\n' "$name"
-        fi
+    for dir in attempts/*; do
+        [ -d "$dir" ] && [ ! -L "$dir" ] && basename "$dir"
     done
-    [ "$found" = 1 ] || echo "  no attempts yet — run 'just practice'"

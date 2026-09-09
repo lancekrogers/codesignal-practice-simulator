@@ -105,9 +105,8 @@ class LifecycleService:
 
     def resume(self, attempt_id: str | None = None) -> SessionState:
         """Resume an active attempt and select an explicitly named attempt."""
-        attempt = self.select_attempt(attempt_id)
-        with self.persistence.attempt_lock(attempt):
-            state = self.persistence.read_session(attempt)
+        with self.workspace.selected_attempt(attempt_id) as attempt:
+            state = self._read_validated_session_locked(attempt)
             if state.status != ACTIVE:
                 raise IllegalLifecycleError(
                     f"cannot resume an attempt in {state.status} state"
@@ -119,7 +118,7 @@ class LifecycleService:
                     f"cannot resume an attempt in {state.status} state"
                 )
             if attempt_id is not None:
-                self.persistence.write_active_pointer(
+                self.persistence.write_active_pointer_locked(
                     self.workspace.attempts_directory,
                     self._pointer_for(state),
                 )
@@ -127,18 +126,16 @@ class LifecycleService:
 
     def status(self, attempt_id: str | None = None) -> SessionState:
         """Observe expiry if needed, then return the authoritative state."""
-        attempt = self.select_attempt(attempt_id)
-        with self.persistence.attempt_lock(attempt):
-            state = self.persistence.read_session(attempt)
+        with self.workspace.selected_attempt(attempt_id) as attempt:
+            state = self._read_validated_session_locked(attempt)
             self._recover_missing_event_locked(attempt, state)
             state, _observed_at = self._expire_if_overdue_locked(attempt, state)
             return state
 
     def time(self, attempt_id: str | None = None) -> TimeObservation:
         """Observe expiry if needed and return an elapsed/remaining-time view."""
-        attempt = self.select_attempt(attempt_id)
-        with self.persistence.attempt_lock(attempt):
-            state = self.persistence.read_session(attempt)
+        with self.workspace.selected_attempt(attempt_id) as attempt:
+            state = self._read_validated_session_locked(attempt)
             self._recover_missing_event_locked(attempt, state)
             state, observed_at = self._expire_if_overdue_locked(attempt, state)
             elapsed_seconds = int((observed_at - state.started_at).total_seconds())
@@ -156,7 +153,7 @@ class LifecycleService:
         """Score an active attempt and persist its latest complete score."""
         attempt = self.select_attempt(attempt_id)
         with self.persistence.attempt_lock(attempt):
-            state = self.persistence.read_session(attempt)
+            state = self._read_validated_session_locked(attempt)
             if state.status != ACTIVE:
                 raise IllegalLifecycleError(
                     f"cannot test an attempt in {state.status} state"
@@ -180,9 +177,8 @@ class LifecycleService:
         """
         if not isinstance(score, ScoreSummary):
             raise InvalidInputError("score is invalid")
-        attempt = self.select_attempt(attempt_id)
-        with self.persistence.attempt_lock(attempt):
-            state = self.persistence.read_session(attempt)
+        with self.workspace.selected_attempt(attempt_id) as attempt:
+            state = self._read_validated_session_locked(attempt)
             if state.status != ACTIVE:
                 raise IllegalLifecycleError(
                     f"cannot test an attempt in {state.status} state"
@@ -199,7 +195,7 @@ class LifecycleService:
         """Finalize an active or expired attempt exactly once."""
         attempt = self.select_attempt(attempt_id)
         with self.persistence.attempt_lock(attempt):
-            state = self.persistence.read_session(attempt)
+            state = self._read_validated_session_locked(attempt)
             if state.status == SUBMITTED:
                 assert state.score is not None
                 return SubmissionResult(state=state, score=state.score)
@@ -267,6 +263,12 @@ class LifecycleService:
     def _recover_missing_event_locked(self, attempt: Path, state: SessionState) -> None:
         """Repair an allowed interrupted state write while holding the attempt lock."""
         self.persistence.recover_missing_state_event_locked(attempt, state, self.clock)
+
+    def _read_validated_session_locked(self, attempt: Path) -> SessionState:
+        """Read state and revalidate its registry reference while the lock is held."""
+        state = self.persistence.read_session(attempt)
+        self.workspace.definition_for_persisted_session(state)
+        return state
 
     def _now(self) -> datetime:
         now = self.clock.now()

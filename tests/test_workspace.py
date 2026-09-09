@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -79,6 +80,20 @@ def tree_bytes(root: Path) -> dict[str, bytes]:
     }
 
 
+def tree_snapshot(root: Path) -> dict[str, tuple[str, bytes | str | None]]:
+    """Capture paths and bytes, including symlinks, for mutation assertions."""
+    snapshot: dict[str, tuple[str, bytes | str | None]] = {}
+    for path in root.rglob("*"):
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            snapshot[relative] = ("symlink", os.readlink(path))
+        elif path.is_dir():
+            snapshot[relative] = ("directory", None)
+        elif path.is_file():
+            snapshot[relative] = ("file", path.read_bytes())
+    return snapshot
+
+
 class RecordingFilesystem(LocalFilesystem):
     """Records and optionally fails exactly one mutating filesystem call."""
 
@@ -141,7 +156,7 @@ class WorkspaceTests(unittest.TestCase):
                 for path in attempt.iterdir()
                 if path.is_file() and not path.name.startswith(".")
             }
-            - {"session.json", "events.jsonl", "COACHING.md", "AGENTS.md", "STATUS.md"},
+            - {"session.json", "events.jsonl", "COACHING.md", "AGENTS.md"},
             set(CACHE_INPUTS),
         )
         for filename in CACHE_INPUTS:
@@ -179,6 +194,54 @@ class WorkspaceTests(unittest.TestCase):
             WorkspaceManager(root, cache).create_attempt(session(str(uuid4())))
 
         self.assertFalse((root / "attempts").exists())
+
+    def test_attempts_symlink_to_cache_is_rejected_without_cache_mutation(self) -> None:
+        temporary, root, cache = self._environment()
+        self.addCleanup(temporary.cleanup)
+        attempts = root / "attempts"
+        attempts.symlink_to(cache.root, target_is_directory=True)
+        cache_before = tree_snapshot(cache.root)
+
+        manager = WorkspaceManager(root, cache)
+        with self.assertRaisesRegex(InvalidInputError, "must not overlap"):
+            manager.create_attempt(session(str(uuid4())))
+        with self.assertRaisesRegex(InvalidInputError, "must not overlap"):
+            manager.reconcile()
+
+        self.assertEqual(tree_snapshot(cache.root), cache_before)
+        self.assertTrue(attempts.is_symlink())
+        self.assertEqual(attempts.resolve(), cache.root.resolve())
+
+    def test_cache_nested_in_attempts_is_rejected_without_cache_mutation(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name) / "workspace"
+        root.mkdir()
+        cache = make_cache(root / "attempts")
+        cache_before = tree_snapshot(cache.root)
+
+        with self.assertRaisesRegex(InvalidInputError, "must not overlap"):
+            WorkspaceManager(root, cache).create_attempt(session(str(uuid4())))
+
+        self.assertEqual(tree_snapshot(cache.root), cache_before)
+        self.assertFalse((root / "attempts" / ".workspace.lock").exists())
+
+    def test_workspace_with_cache_symlink_ancestor_is_rejected_before_mutation(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        cache = make_cache(Path(temporary.name))
+        workspace_target = cache.root / "workspace"
+        workspace_target.mkdir()
+        workspace = Path(temporary.name) / "workspace-alias"
+        workspace.symlink_to(workspace_target, target_is_directory=True)
+        cache_before = tree_snapshot(cache.root)
+
+        with self.assertRaisesRegex(InvalidInputError, "must not overlap"):
+            WorkspaceManager(workspace, cache).create_attempt(session(str(uuid4())))
+
+        self.assertEqual(tree_snapshot(cache.root), cache_before)
+        self.assertTrue(workspace.is_symlink())
+        self.assertFalse((workspace_target / "attempts").exists())
 
     def test_every_creation_filesystem_failure_rolls_back_only_new_attempt(self) -> None:
         """Exercise every individual mkdir/copy/write/flush/replace creation call."""

@@ -1,7 +1,6 @@
 # Timed-attempt agent policy
 
-For a timed attempt, inspect `codesignal-sim context` or the generated
-`STATUS.md` first.
+For a timed attempt, inspect the generated `STATUS.md` first.
 
 - Edit the candidate-owned, non-executable `COACHING.md` by default.
 - Read or edit candidate code only after an explicit candidate request.
