@@ -20,6 +20,7 @@ from .errors import InvalidInputError
 SESSION_SCHEMA_VERSION = "session/v1"
 EVENT_SCHEMA_VERSION = "event/v1"
 ACTIVE_POINTER_SCHEMA_VERSION = "active-pointer/v1"
+SUBMISSION_RECOVERY_SCHEMA_VERSION = "submission-recovery/v1"
 
 FULL_MODE = "full"
 DRILL_MODE = "drill"
@@ -517,6 +518,67 @@ class EventRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class SubmissionRecovery:
+    """A write-ahead record for finishing one scored submission exactly once."""
+
+    schema_version: str
+    prior_state: SessionState
+    state: SessionState
+    event: EventRecord
+
+    def __post_init__(self) -> None:
+        if self.schema_version != SUBMISSION_RECOVERY_SCHEMA_VERSION:
+            _invalid("unsupported submission recovery schema version")
+        if (
+            not isinstance(self.prior_state, SessionState)
+            or self.prior_state.status not in (ACTIVE, EXPIRED)
+        ):
+            _invalid("submission recovery requires an active or expired prior session")
+        if not isinstance(self.state, SessionState) or self.state.status != SUBMITTED:
+            _invalid("submission recovery requires a submitted session")
+        if not isinstance(self.event, EventRecord):
+            _invalid("submission recovery event is invalid")
+        if (
+            self.state.attempt_id != self.prior_state.attempt_id
+            or self.state.assessment != self.prior_state.assessment
+            or self.state.profile != self.prior_state.profile
+            or self.state.started_at != self.prior_state.started_at
+            or self.state.deadline_at != self.prior_state.deadline_at
+            or self.state.revision != self.prior_state.revision + 1
+            or self.event.attempt_id != self.state.attempt_id
+            or self.event.revision != self.state.revision
+            or self.event.occurred_at != self.state.submitted_at
+            or self.event.name != "submitted"
+            or self.event.outcome != "succeeded"
+            or dict(self.event.arguments)
+        ):
+            _invalid("submission recovery does not match its submitted session")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "prior_state": self.prior_state.to_dict(),
+            "state": self.state.to_dict(),
+            "event": self.event.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> SubmissionRecovery:
+        data = _require_mapping(value, "submission recovery")
+        _require_keys(
+            data,
+            frozenset(("schema_version", "prior_state", "state", "event")),
+            "submission recovery",
+        )
+        return cls(
+            schema_version=_require_string(data["schema_version"], "schema_version"),
+            prior_state=SessionState.from_dict(data["prior_state"]),
+            state=SessionState.from_dict(data["state"]),
+            event=EventRecord.from_dict(data["event"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ActivePointer:
     """The validated workspace-root selection, never session authority."""
 
@@ -566,4 +628,6 @@ __all__ = [
     "ModeProfile",
     "ScoreSummary",
     "SessionState",
+    "SUBMISSION_RECOVERY_SCHEMA_VERSION",
+    "SubmissionRecovery",
 ]

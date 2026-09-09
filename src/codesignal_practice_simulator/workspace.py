@@ -259,10 +259,18 @@ class WorkspaceManager:
             return self._reconcile_locked(attempts)
 
     def resolve_attempt(self, explicit_attempt_id: str | None = None) -> Path:
-        """Resolve explicit selection first, otherwise the validated active pointer."""
+        """Take a stable selection snapshot without holding it during later work.
+
+        Commands that score an attempt must not hold the workspace-wide lock for
+        the duration of subprocess execution. They acquire this short selection
+        snapshot first, then use the selected attempt's lock for lifecycle work.
+        """
         attempts = self.attempts_directory
-        attempt = self._select_attempt_path(attempts, explicit_attempt_id)
-        self._definition_for_persisted_session(self.persistence.read_session(attempt))
+        if not attempts.exists():
+            self._select_attempt_path(attempts, explicit_attempt_id)
+        with self.persistence.workspace_lock(attempts):
+            attempt = self._select_attempt_path(attempts, explicit_attempt_id)
+            self._definition_for_persisted_session(self.persistence.read_session(attempt))
         return attempt
 
     @contextmanager
@@ -281,6 +289,9 @@ class WorkspaceManager:
         with self.persistence.workspace_lock(attempts):
             attempt = self._select_attempt_path(attempts, explicit_attempt_id)
             with self.persistence.attempt_lock(attempt):
+                # A write-ahead submission belongs to this attempt and must finish
+                # before any selected-attempt reader can treat the old state as live.
+                self.persistence.recover_submission_locked(attempt)
                 yield attempt
 
     def _select_attempt_path(

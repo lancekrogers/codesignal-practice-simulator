@@ -29,6 +29,9 @@ class Filesystem(Protocol):
     def flush_file(self, path: Path) -> None:
         """Flush a file's content to local storage."""
 
+    def flush_directory(self, path: Path) -> None:
+        """Flush a directory entry change to local storage."""
+
     def replace(self, source: Path, destination: Path) -> None:
         """Atomically replace a sibling destination."""
 
@@ -67,6 +70,13 @@ class LocalFilesystem:
     def flush_file(self, path: Path) -> None:
         with path.open("rb") as stream:
             os.fsync(stream.fileno())
+
+    def flush_directory(self, path: Path) -> None:
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
     def replace(self, source: Path, destination: Path) -> None:
         os.replace(source, destination)

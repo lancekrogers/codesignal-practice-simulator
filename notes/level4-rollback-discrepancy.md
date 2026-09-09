@@ -1,5 +1,8 @@
 # Level 4: the bundled test contradicts the spec
 
+> Post-attempt only. This is a compatibility analysis for reference and study
+> work, not guidance for a live timed attempt.
+
 ## The claim
 
 `level4.md`:

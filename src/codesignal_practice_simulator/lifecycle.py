@@ -8,7 +8,7 @@ writing runtime files themselves.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -58,6 +58,7 @@ class SubmissionResult:
 
     state: SessionState
     score: ScoreSummary
+    newly_submitted: bool = field(default=False, compare=False, repr=False)
 
 
 class LifecycleService:
@@ -153,7 +154,7 @@ class LifecycleService:
         """Score an active attempt and persist its latest complete score."""
         attempt = self.select_attempt(attempt_id)
         with self.persistence.attempt_lock(attempt):
-            state = self._read_validated_session_locked(attempt)
+            state, _recovered_submission = self._read_recovered_session_locked(attempt)
             if state.status != ACTIVE:
                 raise IllegalLifecycleError(
                     f"cannot test an attempt in {state.status} state"
@@ -195,10 +196,14 @@ class LifecycleService:
         """Finalize an active or expired attempt exactly once."""
         attempt = self.select_attempt(attempt_id)
         with self.persistence.attempt_lock(attempt):
-            state = self._read_validated_session_locked(attempt)
+            state, recovered_submission = self._read_recovered_session_locked(attempt)
             if state.status == SUBMITTED:
                 assert state.score is not None
-                return SubmissionResult(state=state, score=state.score)
+                return SubmissionResult(
+                    state=state,
+                    score=state.score,
+                    newly_submitted=recovered_submission,
+                )
             if state.status not in (ACTIVE, EXPIRED):
                 raise IllegalLifecycleError(
                     f"cannot submit an attempt in {state.status} state"
@@ -216,8 +221,12 @@ class LifecycleService:
                 score=score,
                 submitted_at=self._now(),
             )
-            self._persist_transition_locked(attempt, submitted, "submitted")
-            return SubmissionResult(state=submitted, score=score)
+            self._persist_submission_locked(attempt, state, submitted)
+            return SubmissionResult(
+                state=submitted,
+                score=score,
+                newly_submitted=True,
+            )
 
     def _record_test_result_locked(
         self, attempt: Path, state: SessionState, score: ScoreSummary
@@ -245,20 +254,34 @@ class LifecycleService:
         name: str,
         occurred_at: datetime | None = None,
     ) -> None:
-        self.persistence.write_session_locked(attempt, state)
-        self.persistence.append_event_locked(
-            attempt,
-            EventRecord(
-                schema_version=EVENT_SCHEMA_VERSION,
-                event_id=str(uuid4()),
-                attempt_id=state.attempt_id,
-                revision=state.revision,
-                occurred_at=occurred_at or self._now(),
-                name=name,
-                outcome="succeeded",
-                arguments={},
-            ),
+        event = EventRecord(
+            schema_version=EVENT_SCHEMA_VERSION,
+            event_id=str(uuid4()),
+            attempt_id=state.attempt_id,
+            revision=state.revision,
+            occurred_at=occurred_at or self._now(),
+            name=name,
+            outcome="succeeded",
+            arguments={},
         )
+        self.persistence.write_session_locked(attempt, state)
+        self.persistence.append_event_locked(attempt, event)
+
+    def _persist_submission_locked(
+        self, attempt: Path, prior_state: SessionState, state: SessionState
+    ) -> None:
+        """Write ahead the only final lifecycle transition before publishing it."""
+        event = EventRecord(
+            schema_version=EVENT_SCHEMA_VERSION,
+            event_id=str(uuid4()),
+            attempt_id=state.attempt_id,
+            revision=state.revision,
+            occurred_at=state.submitted_at or self._now(),
+            name="submitted",
+            outcome="succeeded",
+            arguments={},
+        )
+        self.persistence.persist_submission_locked(attempt, prior_state, state, event)
 
     def _recover_missing_event_locked(self, attempt: Path, state: SessionState) -> None:
         """Repair an allowed interrupted state write while holding the attempt lock."""
@@ -269,6 +292,11 @@ class LifecycleService:
         state = self.persistence.read_session(attempt)
         self.workspace.definition_for_persisted_session(state)
         return state
+
+    def _read_recovered_session_locked(self, attempt: Path) -> tuple[SessionState, bool]:
+        """Finish any write-ahead submission before applying command policy."""
+        recovered = self.persistence.recover_submission_locked(attempt)
+        return self._read_validated_session_locked(attempt), recovered is not None
 
     def _now(self) -> datetime:
         now = self.clock.now()

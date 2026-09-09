@@ -20,6 +20,7 @@ from codesignal_practice_simulator.errors import (
     LockUnavailableError,
     SessionCorruptError,
 )
+from codesignal_practice_simulator.filesystem import LocalFilesystem
 from codesignal_practice_simulator.lifecycle import LifecycleService
 from codesignal_practice_simulator.models import (
     ACTIVE,
@@ -35,6 +36,10 @@ from codesignal_practice_simulator.workspace import (
     CACHE_INPUTS,
     ValidatedFixtureCache,
     WorkspaceManager,
+)
+from codesignal_practice_simulator.persistence import (
+    SUBMISSION_RECOVERY_FILENAME,
+    Persistence,
 )
 
 
@@ -57,6 +62,20 @@ class RecordingScorer:
     def __call__(self, attempt: Path) -> ScoreSummary:
         self.calls.append(attempt)
         return self.result
+
+
+class FailSubmissionEventPersistenceFilesystem(LocalFilesystem):
+    """Leave a marker when both event append and replacement are unavailable."""
+
+    def append_bytes(self, path: Path, data: bytes) -> None:
+        if path.name == "events.jsonl":
+            raise OSError("injected submission event append failure")
+        super().append_bytes(path, data)
+
+    def replace(self, source: Path, destination: Path) -> None:
+        if destination.name == "events.jsonl":
+            raise OSError("injected submission event replacement failure")
+        super().replace(source, destination)
 
 
 def score() -> ScoreSummary:
@@ -204,7 +223,7 @@ class LifecycleTests(unittest.TestCase):
             ["started", "tested"],
         )
 
-    def test_test_runs_injected_scorer_then_records_result(self) -> None:
+    def test_test_uses_a_short_selection_lock_then_records_result(self) -> None:
         state, attempt = self.start()
 
         with patch.object(
@@ -217,9 +236,9 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(recorded.revision, state.revision + 1)
         self.assertEqual(recorded.score, score())
         self.assertEqual(self.scorer.calls, [attempt])
-        workspace_lock.assert_not_called()
+        workspace_lock.assert_called_once_with(self.manager.attempts_directory)
 
-    def test_submit_runs_its_scorer_without_the_workspace_lock(self) -> None:
+    def test_submit_uses_a_short_selection_lock_before_scoring(self) -> None:
         _state, attempt = self.start()
 
         with patch.object(
@@ -231,7 +250,25 @@ class LifecycleTests(unittest.TestCase):
 
         self.assertEqual(submitted.state.attempt_id, attempt.name)
         self.assertEqual(self.scorer.calls, [attempt])
-        workspace_lock.assert_not_called()
+        workspace_lock.assert_called_once_with(self.manager.attempts_directory)
+
+    def test_scoring_does_not_hold_the_workspace_lock(self) -> None:
+        state, attempt = self.start()
+        scorer_called = False
+
+        def scorer(selected: Path) -> ScoreSummary:
+            nonlocal scorer_called
+            with self.manager.persistence.workspace_lock(self.manager.attempts_directory):
+                scorer_called = True
+            self.assertEqual(selected, attempt)
+            return score()
+
+        service = LifecycleService(self.manager, self.clock, scorer)
+
+        recorded = service.test(state.attempt_id)
+
+        self.assertTrue(scorer_called)
+        self.assertEqual(recorded.score, score())
 
     def test_expired_resume_and_test_are_exit_four_and_byte_identical(self) -> None:
         state, attempt = self.start()
@@ -307,6 +344,48 @@ class LifecycleTests(unittest.TestCase):
             [event.name for event in self.manager.persistence.read_events(attempt)],
             ["started", "submitted"],
         )
+
+    def test_submit_event_failure_leaves_a_recoverable_final_state_without_rescoring(self) -> None:
+        state, attempt = self.start()
+        _neighbor_state, neighbor = self.start()
+        candidate_before = (attempt / "simulation.py").read_bytes()
+        neighbor_before = durable_bytes(neighbor)
+        cache_before = (self.manager.cache.root / "vendor-readme.md").read_bytes()
+        failing = Persistence(FailSubmissionEventPersistenceFilesystem())
+        self.manager.persistence = failing
+        self.service.persistence = failing
+
+        with self.assertRaisesRegex(OSError, "event replacement failure"):
+            self.service.submit(state.attempt_id)
+
+        self.assertEqual(failing.read_session(attempt).status, SUBMITTED)
+        self.assertEqual(
+            [event.name for event in failing.read_events(attempt)],
+            ["started"],
+        )
+        self.assertTrue((attempt / SUBMISSION_RECOVERY_FILENAME).is_file())
+        self.assertEqual(self.scorer.calls, [attempt])
+        self.assertEqual((attempt / "simulation.py").read_bytes(), candidate_before)
+        self.assertEqual(durable_bytes(neighbor), neighbor_before)
+        self.assertEqual((self.manager.cache.root / "vendor-readme.md").read_bytes(), cache_before)
+
+        recovered_persistence = Persistence()
+        self.manager.persistence = recovered_persistence
+        self.service.persistence = recovered_persistence
+        recovered = self.service.status(state.attempt_id)
+        before_repeat = durable_bytes(attempt)
+        repeated = self.service.submit(state.attempt_id)
+
+        self.assertEqual(recovered.status, SUBMITTED)
+        self.assertFalse(repeated.newly_submitted)
+        self.assertEqual(recovered, repeated.state)
+        self.assertEqual(durable_bytes(attempt), before_repeat)
+        self.assertEqual(self.scorer.calls, [attempt])
+        self.assertEqual(
+            [event.name for event in recovered_persistence.read_events(attempt)],
+            ["started", "submitted"],
+        )
+        self.assertFalse((attempt / SUBMISSION_RECOVERY_FILENAME).exists())
 
     def test_repeat_submit_without_scorer_preserves_submitted_missing_event_bytes(self) -> None:
         state, attempt = self.start()

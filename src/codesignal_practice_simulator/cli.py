@@ -11,7 +11,6 @@ import argparse
 import json
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, TextIO
 from uuid import UUID
@@ -19,18 +18,19 @@ from uuid import UUID
 from . import __version__
 from .assessments import AssessmentRegistry, DEFAULT_ASSESSMENT_REGISTRY
 from .clock import Clock, UTCClock
+from .evaluation import EvaluationService
 from .errors import (
     DomainError,
     ExitCode,
     FixtureSetupRequiredError,
-    IllegalLifecycleError,
     InvalidInputError,
 )
 from .fixture_setup import FixtureSetupError, populate_runtime_fixture
 from .lifecycle import LifecycleService, SubmissionResult, TimeObservation
-from .models import SessionState
-from .prompts import PromptResult, PromptService
-from .rendering import DerivedStatusService
+from .models import ScoreSummary, SessionState
+from .prompts import PromptService
+from .rendering import AttemptContextService, ContextResult, DerivedStatusService
+from .scoring import IsolatedAttemptScorer
 from .workspace import ATTEMPTS_DIRECTORY, ValidatedFixtureCache, WorkspaceManager
 
 
@@ -59,7 +59,7 @@ class CommandApplication(Protocol):
 
     def submit(self, *, attempt_id: str | None) -> object: ...
 
-    def context(self, *, attempt_id: str | None) -> object: ...
+    def context(self, *, attempt_id: str | None, output_format: str) -> object: ...
 
 
 ApplicationFactory = Callable[[Path], CommandApplication]
@@ -75,44 +75,6 @@ class _Parser(argparse.ArgumentParser):
 
 class _SerializationError(Exception):
     """Result serialization failed after an application adapter completed."""
-
-
-@dataclass(frozen=True, slots=True)
-class _DeferredApplication:
-    """Non-mutating seam for commands wired by later runtime tasks."""
-
-    workspace_root: Path
-
-    def _unavailable(self, command: str) -> object:
-        raise IllegalLifecycleError(
-            f"{command} is not available until its runtime adapter is configured"
-        )
-
-    def start(
-        self, *, assessment: str, mode: str, drill_duration_seconds: int | None
-    ) -> object:
-        return self._unavailable("start")
-
-    def resume(self, *, attempt_id: str | None) -> object:
-        return self._unavailable("resume")
-
-    def status(self, *, attempt_id: str | None) -> object:
-        return self._unavailable("status")
-
-    def time(self, *, attempt_id: str | None) -> object:
-        return self._unavailable("time")
-
-    def task(self, *, attempt_id: str | None, level: int) -> PromptResult:
-        return self._unavailable("task")
-
-    def test(self, *, attempt_id: str | None) -> object:
-        return self._unavailable("test")
-
-    def submit(self, *, attempt_id: str | None) -> object:
-        return self._unavailable("submit")
-
-    def context(self, *, attempt_id: str | None) -> object:
-        return self._unavailable("context")
 
 
 class _RuntimeApplication:
@@ -131,11 +93,22 @@ class _RuntimeApplication:
         self.workspace = WorkspaceManager(
             resolved_workspace, cache, registry=registry
         )
-        self.lifecycle = LifecycleService(self.workspace, clock or UTCClock())
+        self.lifecycle = LifecycleService(
+            self.workspace,
+            clock or UTCClock(),
+            self._score_selected_attempt,
+        )
+        self.evaluation = EvaluationService(self.lifecycle)
         self.prompts = PromptService(self.workspace)
+        self.contexts = AttemptContextService(self.workspace)
         self.derived_status = DerivedStatusService(self.workspace)
         self.registry = registry
-        self._deferred = _DeferredApplication(resolved_workspace)
+
+    def _score_selected_attempt(self, attempt: Path) -> ScoreSummary:
+        """Create an assessment-specific isolated runner from persisted metadata."""
+        state = self.workspace.persistence.read_session(attempt)
+        definition = self.workspace.definition_for_persisted_session(state)
+        return IsolatedAttemptScorer(definition).score(attempt)
 
     def fetch(self, *, source: Path | None) -> Mapping[str, object]:
         """Populate this workspace's ignored fixture cache from packaged metadata."""
@@ -191,14 +164,24 @@ class _RuntimeApplication:
         self.derived_status.refresh(result.attempt_id)
         return result
 
-    def test(self, *, attempt_id: str | None) -> object:
-        return self._deferred.test(attempt_id=attempt_id)
+    def test(self, *, attempt_id: str | None) -> SessionState:
+        state = self.evaluation.test(attempt_id)
+        self.derived_status.refresh(state.attempt_id)
+        return state
 
-    def submit(self, *, attempt_id: str | None) -> object:
-        return self._deferred.submit(attempt_id=attempt_id)
+    def submit(self, *, attempt_id: str | None) -> SubmissionResult:
+        result = self.evaluation.submit(attempt_id)
+        if result.newly_submitted:
+            self.derived_status.refresh(result.state.attempt_id)
+        return result
 
-    def context(self, *, attempt_id: str | None) -> object:
-        return self._deferred.context(attempt_id=attempt_id)
+    def context(
+        self, *, attempt_id: str | None, output_format: str
+    ) -> ContextResult:
+        return self.contexts.read(
+            attempt_id=attempt_id,
+            output_format=output_format,  # type: ignore[arg-type]
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -231,10 +214,19 @@ def build_parser() -> argparse.ArgumentParser:
         ("time", "show selected attempt time"),
         ("test", "score selected attempt"),
         ("submit", "submit selected attempt"),
-        ("context", "show safe selected attempt context"),
     ):
         subparser = commands.add_parser(command, help=help_text)
         _add_common_options(subparser)
+
+    context = commands.add_parser("context", help="show safe selected attempt context")
+    _add_common_options(context)
+    context.add_argument(
+        "--format",
+        dest="output_format",
+        choices=("markdown", "json"),
+        default="markdown",
+        help="context representation inside the CLI result (default: markdown)",
+    )
 
     task = commands.add_parser("task", help="show a selected attempt task")
     _add_common_options(task)
@@ -309,6 +301,8 @@ def serialize_result(result: object) -> Mapping[str, object]:
         }
     if isinstance(result, SubmissionResult):
         return {"session": result.state.to_dict(), "score": result.score.to_dict()}
+    if isinstance(result, ContextResult):
+        return result.to_dict()
     if isinstance(result, Mapping):
         return dict(result)
     to_dict = getattr(result, "to_dict", None)
@@ -352,6 +346,11 @@ def _dispatch(application: CommandApplication, namespace: argparse.Namespace) ->
         )
     if command == "task":
         return application.task(attempt_id=namespace.attempt_id, level=namespace.level)
+    if command == "context":
+        return application.context(
+            attempt_id=namespace.attempt_id,
+            output_format=namespace.output_format,
+        )
     method = getattr(application, command)
     return method(attempt_id=namespace.attempt_id)
 
@@ -463,6 +462,15 @@ def _write_document(
     if document["ok"]:
         output.write(f"[{document['schema_version']}] success\n")
         for key, value in document["result"].items():  # type: ignore[index]
+            if key == "context" and isinstance(value, str):
+                output.write(f"{key}:\n{value}")
+                continue
+            if key == "context" and isinstance(value, Mapping):
+                rendered = json.dumps(
+                    value, ensure_ascii=False, indent=2, sort_keys=True
+                )
+                output.write(f"{key}:\n{rendered}\n")
+                continue
             output.write(f"{key}: {value}\n")
         return
     error: Mapping[str, Any] = document["error"]  # type: ignore[assignment]

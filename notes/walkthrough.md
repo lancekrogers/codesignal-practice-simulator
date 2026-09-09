@@ -1,5 +1,8 @@
 # Walkthrough: file_storage, level by level
 
+> Post-attempt only. Do not use this walkthrough, its reference code, or its
+> answers during a live timed attempt.
+
 How the reference solution in `solution/simulation.py` was built, one level at
 a time, and what each level costs you if you build it the obvious way.
 
@@ -153,5 +156,6 @@ Budgets total 90–165 minutes against a 90-minute clock. That is intentional:
 the grade is how far you got, so bank each level with passing tests before
 starting the next one, and never leave level N broken to start level N+1.
 
-Run `just score` often. It is the same partial-credit view the real assessment
-gives you, and it tells you whether a level-3 refactor quietly broke level 1.
+Do not test a submitted attempt. For experiments, start a new drill or attempt;
+otherwise use post-attempt checkers such as `just study-check`,
+`just study-spec`, or `just test-compat`.

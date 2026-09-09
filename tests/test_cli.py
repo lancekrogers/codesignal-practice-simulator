@@ -29,12 +29,18 @@ from codesignal_practice_simulator.errors import (
     InvalidInputError,
     SessionUnavailableError,
 )
+from codesignal_practice_simulator.filesystem import LocalFilesystem
 from codesignal_practice_simulator.models import (
     FULL_DURATION_SECONDS,
     SUBMITTED,
     LevelResult,
     ScoreSummary,
 )
+from codesignal_practice_simulator.persistence import (
+    SUBMISSION_RECOVERY_FILENAME,
+    Persistence,
+)
+from codesignal_practice_simulator.scoring import IsolatedAttemptScorer
 from codesignal_practice_simulator.workspace import CACHE_INPUTS
 
 
@@ -48,6 +54,20 @@ class FakeClock:
 
     def now(self) -> datetime:
         return self.value
+
+
+class FailSubmissionEventPersistenceFilesystem(LocalFilesystem):
+    """Leave a marker when both event append and replacement are unavailable."""
+
+    def append_bytes(self, path: Path, data: bytes) -> None:
+        if path.name == "events.jsonl":
+            raise OSError("injected submission event append failure")
+        super().append_bytes(path, data)
+
+    def replace(self, source: Path, destination: Path) -> None:
+        if destination.name == "events.jsonl":
+            raise OSError("injected submission event replacement failure")
+        super().replace(source, destination)
 
 
 def write_fixture_project(root: Path) -> tuple[Path, Path]:
@@ -209,24 +229,30 @@ class CliTests(unittest.TestCase):
                 self.assertNotIn("--attempt", options)
             else:
                 self.assertIn("--attempt", options)
+        context_options = {
+            option for action in commands["context"]._actions for option in action.option_strings
+        }
+        self.assertIn("--format", context_options)
 
     def test_console_adapter_and_module_help_are_identical(self) -> None:
-        console_output = io.StringIO()
-        with redirect_stdout(console_output):
-            self.assertEqual(cli.main(["--help"]), 0)
-
         environment = os.environ | {"PYTHONPATH": str(PROJECT / "src")}
-        completed = subprocess.run(
-            [sys.executable, "-m", "codesignal_practice_simulator", "--help"],
-            cwd=PROJECT,
-            env=environment,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout, console_output.getvalue())
-        self.assertEqual(completed.stderr, "")
+        for arguments in (["--help"], ["context", "--help"]):
+            with self.subTest(arguments=arguments):
+                console_output = io.StringIO()
+                with redirect_stdout(console_output):
+                    self.assertEqual(cli.main(arguments), 0)
+
+                completed = subprocess.run(
+                    [sys.executable, "-m", "codesignal_practice_simulator", *arguments],
+                    cwd=PROJECT,
+                    env=environment,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertEqual(completed.stdout, console_output.getvalue())
+                self.assertEqual(completed.stderr, "")
 
     def test_options_are_parsed_after_the_subcommand_and_attempt_is_forwarded(self) -> None:
         application = RecordingApplication({"attempt_id": CANONICAL_ATTEMPT})
@@ -263,7 +289,15 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(
             application.calls,
-            [("context", {"attempt_id": CANONICAL_ATTEMPT})],
+            [
+                (
+                    "context",
+                    {
+                        "attempt_id": CANONICAL_ATTEMPT,
+                        "output_format": "markdown",
+                    },
+                )
+            ],
         )
 
     def test_domain_errors_have_stable_json_envelopes_and_exits(self) -> None:
@@ -409,6 +443,27 @@ class RuntimeCliTests(unittest.TestCase):
     @staticmethod
     def session(document: dict[str, object]) -> dict[str, object]:
         return document["result"]["session"]  # type: ignore[index,return-value]
+
+    @staticmethod
+    def score(*outcomes: str) -> ScoreSummary:
+        return ScoreSummary(
+            tuple(
+                LevelResult(level, outcome)  # type: ignore[arg-type]
+                for level, outcome in enumerate(outcomes, start=1)
+            )
+        )
+
+    @staticmethod
+    def event_names(attempt: Path) -> list[str]:
+        return [
+            event["name"]
+            for event in (
+                json.loads(line)
+                for line in (attempt / "events.jsonl").read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            )
+        ]
 
     def test_start_uses_project_fixture_cache_and_persists_full_or_drill_profiles(self) -> None:
         cache_before = file_bytes(self.cache)
@@ -665,6 +720,273 @@ class RuntimeCliTests(unittest.TestCase):
         )
         self.assertEqual(code, 2)
         self.assertEqual(document["error"]["code"], "invalid_input")  # type: ignore[index]
+
+    def test_test_persists_all_four_outcomes_and_returns_candidate_failure(self) -> None:
+        started = self.session(
+            self.execute(["start", "--workspace-root", str(self.workspace), "--json"])[1]
+        )
+        attempt = self.workspace / "attempts" / started["attempt_id"]  # type: ignore[operator]
+        expected = self.score("passed", "failed", "error", "passed")
+
+        with patch.object(
+            IsolatedAttemptScorer,
+            "score",
+            return_value=expected,
+        ) as score_attempt:
+            code, document = self.execute(
+                ["test", "--workspace-root", str(self.workspace), "--json"]
+            )
+
+        self.assertEqual(code, 5)
+        self.assertEqual(document["error"]["code"], "candidate_failure")  # type: ignore[index]
+        score_attempt.assert_called_once()
+        persisted = json.loads((attempt / "session.json").read_text(encoding="utf-8"))
+        self.assertEqual(persisted["score"], expected.to_dict())
+        self.assertEqual(persisted["revision"], 1)
+        self.assertEqual(self.event_names(attempt), ["started", "tested"])
+
+    def test_test_all_passes_returns_zero_with_isolated_subprocess_score(self) -> None:
+        started = self.session(
+            self.execute(["start", "--workspace-root", str(self.workspace), "--json"])[1]
+        )
+        attempt = self.workspace / "attempts" / started["attempt_id"]  # type: ignore[operator]
+        (attempt / "simulation.py").write_text(
+            "def evaluate(group):\n    return 'ok'\n", encoding="utf-8"
+        )
+        test_lines = [
+            "import unittest",
+            "from simulation import evaluate",
+            "",
+            "class TestSimulateCodingFramework(unittest.TestCase):",
+        ]
+        for group in range(1, 5):
+            test_lines.extend(
+                (
+                    f"    def test_group_{group}(self):",
+                    f"        self.assertEqual(evaluate({group}), 'ok')",
+                )
+            )
+        (attempt / "test_simulation.py").write_text(
+            "\n".join(test_lines) + "\n",
+            encoding="utf-8",
+        )
+
+        code, document = self.execute(
+            ["test", "--workspace-root", str(self.workspace), "--json"]
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.session(document)["score"]["passed_levels"], 4)  # type: ignore[index]
+        self.assertEqual(self.event_names(attempt), ["started", "tested"])
+
+    def test_expired_test_records_one_expiry_and_never_starts_a_runner(self) -> None:
+        started = self.session(
+            self.execute(["start", "--workspace-root", str(self.workspace), "--json"])[1]
+        )
+        attempt = self.workspace / "attempts" / started["attempt_id"]  # type: ignore[operator]
+        self.clock.value = START + timedelta(seconds=FULL_DURATION_SECONDS)
+
+        with patch.object(IsolatedAttemptScorer, "score") as score_attempt:
+            first_code, first = self.execute(
+                ["test", "--workspace-root", str(self.workspace), "--json"]
+            )
+            bytes_after_first = file_bytes(attempt)
+            context_code, context = self.execute(
+                [
+                    "context",
+                    "--workspace-root",
+                    str(self.workspace),
+                    "--format",
+                    "json",
+                    "--json",
+                ]
+            )
+            second_code, second = self.execute(
+                ["test", "--workspace-root", str(self.workspace), "--json"]
+            )
+
+        self.assertEqual((first_code, context_code, second_code), (4, 0, 4))
+        self.assertEqual(first["error"]["code"], "illegal_lifecycle")  # type: ignore[index]
+        self.assertEqual(second, first)
+        self.assertEqual(context["result"]["context"]["lifecycle"]["status"], "expired")  # type: ignore[index]
+        score_attempt.assert_not_called()
+        self.assertEqual(file_bytes(attempt), bytes_after_first)
+        self.assertEqual(self.event_names(attempt), ["started", "expired"])
+
+    def test_submit_is_byte_identical_and_never_rescores_after_finality(self) -> None:
+        started = self.session(
+            self.execute(["start", "--workspace-root", str(self.workspace), "--json"])[1]
+        )
+        attempt = self.workspace / "attempts" / started["attempt_id"]  # type: ignore[operator]
+        expected = self.score("passed", "failed", "passed", "passed")
+
+        def execute_raw() -> tuple[int, str]:
+            output = io.StringIO()
+            code = cli.execute(
+                ["submit", "--workspace-root", str(self.workspace), "--json"],
+                application_factory=self.runtime_application,
+                output=output,
+            )
+            return code, output.getvalue()
+
+        with patch.object(
+            IsolatedAttemptScorer,
+            "score",
+            return_value=expected,
+        ) as score_attempt:
+            first_code, first = execute_raw()
+            bytes_after_first = file_bytes(attempt)
+            second_code, second = execute_raw()
+            invalid_test_code, invalid_test = self.execute(
+                ["test", "--workspace-root", str(self.workspace), "--json"]
+            )
+
+        self.assertEqual((first_code, second_code), (0, 0))
+        self.assertEqual(invalid_test_code, 4)
+        self.assertEqual(invalid_test["error"]["code"], "illegal_lifecycle")  # type: ignore[index]
+        self.assertEqual(first, second)
+        self.assertEqual(file_bytes(attempt), bytes_after_first)
+        score_attempt.assert_called_once()
+        self.assertEqual(self.event_names(attempt), ["started", "submitted"])
+        self.assertEqual(
+            json.loads(first)["result"]["score"], expected.to_dict()  # type: ignore[index]
+        )
+
+    def test_submit_cli_recovers_a_failed_event_append_without_rescoring_or_touching_neighbors(self) -> None:
+        application = self.runtime_application(self.workspace)
+
+        def invoke(arguments: list[str]) -> tuple[int, dict[str, object]]:
+            output = io.StringIO()
+            code = cli.execute(
+                [*arguments, "--workspace-root", str(self.workspace), "--json"],
+                application_factory=lambda _workspace_root: application,
+                output=output,
+            )
+            return code, json.loads(output.getvalue())
+
+        started = self.session(invoke(["start"])[1])
+        _neighbor = self.session(invoke(["start"])[1])
+        attempt = self.workspace / "attempts" / started["attempt_id"]  # type: ignore[operator]
+        neighbor = self.workspace / "attempts" / _neighbor["attempt_id"]  # type: ignore[operator]
+        candidate_before = (attempt / "simulation.py").read_bytes()
+        neighbor_before = file_bytes(neighbor)
+        cache_before = file_bytes(self.cache)
+        reference = self.project / "reference.md"
+        reference.write_text("reference bytes must remain unchanged\n", encoding="utf-8")
+        reference_before = reference.read_bytes()
+        expected = self.score("passed", "failed", "passed", "passed")
+        failing = Persistence(FailSubmissionEventPersistenceFilesystem())
+        application.workspace.persistence = failing
+        application.lifecycle.persistence = failing
+
+        with patch.object(
+            IsolatedAttemptScorer, "score", return_value=expected
+        ) as score_attempt:
+            failed_code, failed = invoke(["submit", "--attempt", started["attempt_id"]])  # type: ignore[list-item]
+            self.assertEqual((failed_code, failed["error"]["code"]), (2, "internal_error"))  # type: ignore[index]
+            self.assertEqual(
+                json.loads((attempt / "session.json").read_text(encoding="utf-8"))["status"],
+                "submitted",
+            )
+            self.assertEqual(self.event_names(attempt), ["started"])
+            self.assertTrue((attempt / SUBMISSION_RECOVERY_FILENAME).is_file())
+
+            recovered_persistence = Persistence()
+            application.workspace.persistence = recovered_persistence
+            application.lifecycle.persistence = recovered_persistence
+            recovered_code, recovered = invoke(
+                ["submit", "--attempt", started["attempt_id"]]  # type: ignore[list-item]
+            )
+            after_recovery = file_bytes(attempt)
+            repeated_code, repeated = invoke(
+                ["submit", "--attempt", started["attempt_id"]]  # type: ignore[list-item]
+            )
+
+        self.assertEqual((recovered_code, repeated_code), (0, 0))
+        self.assertEqual(recovered, repeated)
+        self.assertEqual(file_bytes(attempt), after_recovery)
+        score_attempt.assert_called_once()
+        self.assertEqual(self.event_names(attempt), ["started", "submitted"])
+        self.assertFalse((attempt / SUBMISSION_RECOVERY_FILENAME).exists())
+        self.assertEqual((attempt / "simulation.py").read_bytes(), candidate_before)
+        self.assertEqual(file_bytes(neighbor), neighbor_before)
+        self.assertEqual(file_bytes(self.cache), cache_before)
+        self.assertEqual(reference.read_bytes(), reference_before)
+
+    def test_overdue_submit_expires_then_finalizes_once_and_scoring_error_is_atomic(self) -> None:
+        started = self.session(
+            self.execute(["start", "--workspace-root", str(self.workspace), "--json"])[1]
+        )
+        attempt = self.workspace / "attempts" / started["attempt_id"]  # type: ignore[operator]
+        self.clock.value = START + timedelta(seconds=FULL_DURATION_SECONDS)
+        expected = self.score("passed", "passed", "passed", "passed")
+
+        with patch.object(IsolatedAttemptScorer, "score", return_value=expected):
+            code, document = self.execute(
+                ["submit", "--workspace-root", str(self.workspace), "--json"]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.session(document)["status"], SUBMITTED)
+        self.assertEqual(self.event_names(attempt), ["started", "expired", "submitted"])
+
+        active = self.session(
+            self.execute(["start", "--workspace-root", str(self.workspace), "--json"])[1]
+        )
+        active_attempt = self.workspace / "attempts" / active["attempt_id"]  # type: ignore[operator]
+        active_before = file_bytes(active_attempt)
+        adapter = self.runtime_application(self.workspace)
+        with patch.object(adapter.lifecycle, "scorer", side_effect=RuntimeError):
+            with self.assertRaises(RuntimeError):
+                adapter.submit(attempt_id=active["attempt_id"])  # type: ignore[arg-type]
+        self.assertEqual(file_bytes(active_attempt), active_before)
+        self.assertEqual(self.event_names(active_attempt), ["started"])
+
+    def test_context_is_safe_read_only_and_available_after_submission(self) -> None:
+        started = self.session(
+            self.execute(["start", "--workspace-root", str(self.workspace), "--json"])[1]
+        )
+        attempt = self.workspace / "attempts" / started["attempt_id"]  # type: ignore[operator]
+        (attempt / "simulation.py").write_text("candidate source secret\n", encoding="utf-8")
+        (attempt / "test_simulation.py").write_text("test fixture secret\n", encoding="utf-8")
+        expected = self.score("passed", "passed", "passed", "passed")
+        with patch.object(IsolatedAttemptScorer, "score", return_value=expected):
+            self.execute(["submit", "--workspace-root", str(self.workspace), "--json"])
+        before_context = file_bytes(attempt)
+
+        code, document = self.execute(
+            [
+                "context",
+                "--workspace-root",
+                str(self.workspace),
+                "--format",
+                "json",
+                "--json",
+            ]
+        )
+        markdown_code, markdown = self.execute(
+            [
+                "context",
+                "--workspace-root",
+                str(self.workspace),
+                "--format",
+                "markdown",
+                "--json",
+            ]
+        )
+
+        self.assertEqual((code, markdown_code), (0, 0))
+        self.assertEqual(file_bytes(attempt), before_context)
+        context = document["result"]["context"]  # type: ignore[index]
+        self.assertEqual(context["lifecycle"]["status"], SUBMITTED)  # type: ignore[index]
+        self.assertEqual(
+            [event["name"] for event in context["events"]],  # type: ignore[index]
+            ["started", "submitted"],
+        )
+        self.assertIn("# Attempt status", markdown["result"]["context"])  # type: ignore[index]
+        for forbidden in ("candidate source secret", "test fixture secret", "simulation.py"):
+            self.assertNotIn(forbidden, json.dumps(document))
+            self.assertNotIn(forbidden, markdown["result"]["context"])  # type: ignore[index]
 
 
 class WheelRuntimeTests(unittest.TestCase):

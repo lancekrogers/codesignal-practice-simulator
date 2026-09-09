@@ -6,6 +6,7 @@ import json
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -24,13 +25,20 @@ from codesignal_practice_simulator.models import (
     FULL_MODE,
     FULL_PROFILE,
     SESSION_SCHEMA_VERSION,
+    SUBMITTED,
     ActivePointer,
     AssessmentMetadata,
     EventRecord,
+    LevelResult,
     ModeProfile,
+    ScoreSummary,
     SessionState,
 )
-from codesignal_practice_simulator.persistence import Persistence, initial_event
+from codesignal_practice_simulator.persistence import (
+    SUBMISSION_RECOVERY_FILENAME,
+    Persistence,
+    initial_event,
+)
 
 
 class FixedClock:
@@ -66,6 +74,37 @@ class FailingFilesystem(LocalFilesystem):
         super().replace(source, destination)
 
 
+class FlushAfterAppendFilesystem(LocalFilesystem):
+    """Report one event flush failure after its bytes have been written."""
+
+    def __init__(self) -> None:
+        self.after_event_append = False
+        self.failed = False
+
+    def append_bytes(self, path: Path, data: bytes) -> None:
+        super().append_bytes(path, data)
+        self.after_event_append = path.name == "events.jsonl"
+
+    def flush_file(self, path: Path) -> None:
+        super().flush_file(path)
+        if self.after_event_append and path.name == "events.jsonl" and not self.failed:
+            self.failed = True
+            raise OSError("injected event flush failure after append")
+
+
+class ReplaceAfterSessionWriteFilesystem(LocalFilesystem):
+    """Report one failure only after atomically publishing the target session."""
+
+    def __init__(self) -> None:
+        self.failed = False
+
+    def replace(self, source: Path, destination: Path) -> None:
+        super().replace(source, destination)
+        if destination.name == "session.json" and not self.failed:
+            self.failed = True
+            raise OSError("injected session replace failure after write")
+
+
 def state(attempt_id: str, revision: int = 0) -> SessionState:
     started = datetime(2026, 9, 8, 19, tzinfo=timezone.utc)
     return SessionState(
@@ -77,6 +116,29 @@ def state(attempt_id: str, revision: int = 0) -> SessionState:
         deadline_at=started + timedelta(seconds=FULL_DURATION_SECONDS),
         status=ACTIVE,
         revision=revision,
+    )
+
+
+def submitted_state(session: SessionState) -> SessionState:
+    return replace(
+        session,
+        status=SUBMITTED,
+        revision=session.revision + 1,
+        score=ScoreSummary(tuple(LevelResult(level, "passed") for level in range(1, 5))),
+        submitted_at=session.started_at,
+    )
+
+
+def submitted_event(session: SessionState) -> EventRecord:
+    return EventRecord(
+        schema_version=EVENT_SCHEMA_VERSION,
+        event_id=str(uuid4()),
+        attempt_id=session.attempt_id,
+        revision=session.revision,
+        occurred_at=session.submitted_at,  # type: ignore[arg-type]
+        name="submitted",
+        outcome="succeeded",
+        arguments={},
     )
 
 
@@ -139,12 +201,23 @@ class PersistenceTests(unittest.TestCase):
         events.write_bytes(valid + b"\n{not json}\n")
         with self.assertRaisesRegex(SessionCorruptError, "malformed JSONL"):
             self.persistence.read_events(self.attempt)
-
         events.write_bytes(valid + b"\n{not json}")
         self.assertEqual(len(self.persistence.read_events(self.attempt)), 1)
 
         events.write_bytes(valid + b"\n{not json}\ntrailing")
         with self.assertRaisesRegex(SessionCorruptError, "malformed JSONL"):
+            self.persistence.read_events(self.attempt)
+
+    def test_events_reject_duplicate_event_ids(self) -> None:
+        event = initial_event(self.session)
+        (self.attempt / "events.jsonl").write_bytes(
+            json.dumps(event.to_dict()).encode("utf-8")
+            + b"\n"
+            + json.dumps(event.to_dict()).encode("utf-8")
+            + b"\n"
+        )
+
+        with self.assertRaisesRegex(SessionCorruptError, "duplicate event ID"):
             self.persistence.read_events(self.attempt)
 
     def test_recovery_appends_one_event_for_a_missing_authoritative_revision(self) -> None:
@@ -173,6 +246,113 @@ class PersistenceTests(unittest.TestCase):
 
         self.assertIsNotNone(recovered)
         self.assertEqual(recovered.revision, revised.revision)  # type: ignore[union-attr]
+
+    def test_submission_recovery_rewrites_an_event_whose_flush_failed_after_append(self) -> None:
+        submitted = submitted_state(self.session)
+        event = submitted_event(submitted)
+        failing = Persistence(FlushAfterAppendFilesystem())
+
+        with failing.attempt_lock(self.attempt):
+            failing.write_submission_recovery_locked(
+                self.attempt, self.session, submitted, event
+            )
+            recovered = failing.recover_submission_locked(self.attempt)
+
+        self.assertEqual(recovered, submitted)
+        self.assertEqual(failing.read_session(self.attempt), submitted)
+        events = failing.read_events(self.attempt)
+        self.assertEqual([record for record in events if record.name == "submitted"], [event])
+        self.assertFalse((self.attempt / SUBMISSION_RECOVERY_FILENAME).exists())
+
+    def test_submission_recovery_survives_a_reported_session_publish_failure(self) -> None:
+        submitted = submitted_state(self.session)
+        event = submitted_event(submitted)
+        with self.persistence.attempt_lock(self.attempt):
+            self.persistence.write_submission_recovery_locked(
+                self.attempt, self.session, submitted, event
+            )
+
+        failing = Persistence(ReplaceAfterSessionWriteFilesystem())
+        with failing.attempt_lock(self.attempt):
+            with self.assertRaisesRegex(OSError, "session replace failure"):
+                failing.recover_submission_locked(self.attempt)
+
+        self.assertEqual(failing.read_session(self.attempt), submitted)
+        self.assertEqual(
+            [record for record in failing.read_events(self.attempt) if record.name == "submitted"],
+            [],
+        )
+        self.assertTrue((self.attempt / SUBMISSION_RECOVERY_FILENAME).exists())
+        with self.persistence.attempt_lock(self.attempt):
+            self.assertEqual(self.persistence.recover_submission_locked(self.attempt), submitted)
+        self.assertEqual(
+            [record for record in self.persistence.read_events(self.attempt) if record.name == "submitted"],
+            [event],
+        )
+        self.assertFalse((self.attempt / SUBMISSION_RECOVERY_FILENAME).exists())
+
+    def test_submission_recovery_rejects_a_session_other_than_its_exact_endpoints(self) -> None:
+        submitted = submitted_state(self.session)
+        event = submitted_event(submitted)
+        unexpected = replace(self.session, revision=1)
+        with self.persistence.attempt_lock(self.attempt):
+            self.persistence.write_submission_recovery_locked(
+                self.attempt, self.session, submitted, event
+            )
+            self.persistence.write_session_locked(self.attempt, unexpected)
+            with self.assertRaisesRegex(SessionCorruptError, "state does not match"):
+                self.persistence.recover_submission_locked(self.attempt)
+
+        self.assertTrue((self.attempt / SUBMISSION_RECOVERY_FILENAME).exists())
+        self.assertEqual(self.persistence.read_session(self.attempt), unexpected)
+        self.assertEqual(
+            [record for record in self.persistence.read_events(self.attempt) if record.name == "submitted"],
+            [],
+        )
+
+    def test_submission_recovery_rejects_a_conflicting_event_without_publishing_state(self) -> None:
+        submitted = submitted_state(self.session)
+        event = submitted_event(submitted)
+        other_event = EventRecord(
+            schema_version=EVENT_SCHEMA_VERSION,
+            event_id=str(uuid4()),
+            attempt_id=submitted.attempt_id,
+            revision=submitted.revision,
+            occurred_at=submitted.submitted_at,  # type: ignore[arg-type]
+            name="tested",
+            outcome="succeeded",
+            arguments={},
+        )
+        with self.persistence.attempt_lock(self.attempt):
+            self.persistence.write_submission_recovery_locked(
+                self.attempt, self.session, submitted, event
+            )
+            self.persistence.append_event_locked(self.attempt, other_event)
+
+            marker_before = (
+                self.attempt / SUBMISSION_RECOVERY_FILENAME
+            ).read_bytes()
+            events_before = (self.attempt / "events.jsonl").read_bytes()
+            session_before = (self.attempt / "session.json").read_bytes()
+            with self.assertRaisesRegex(
+                SessionCorruptError, "expected revision has an unexpected event"
+            ):
+                self.persistence.recover_submission_locked(self.attempt)
+
+        self.assertEqual(
+            (self.attempt / SUBMISSION_RECOVERY_FILENAME).read_bytes(), marker_before
+        )
+        self.assertEqual((self.attempt / "events.jsonl").read_bytes(), events_before)
+        self.assertEqual((self.attempt / "session.json").read_bytes(), session_before)
+        events = self.persistence.read_events(self.attempt)
+        self.assertEqual(
+            [record.revision for record in events],
+            [self.session.revision, submitted.revision],
+        )
+        self.assertEqual(events[-1], other_event)
+        self.assertFalse(
+            any(record.name == "submitted" for record in events)
+        )
 
     def test_recovery_rejects_event_records_owned_by_another_attempt(self) -> None:
         foreign = EventRecord(

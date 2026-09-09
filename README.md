@@ -1,92 +1,139 @@
 # CodeSignal Practice Simulator
 
-Practice a four-level, stateful CodeSignal-style exercise locally. The goal is
-to work through one evolving program under interview conditions, then study
-clear reference material afterward.
+Practice a four-level, stateful CodeSignal-style exercise locally. The CLI is
+the supported timed interface; Just recipes are optional shortcuts.
 
-## Setup
+## Install and FETCH_ONLY setup
 
-This project supports Python 3.10 and newer and has no project runtime
-dependencies.
-
-```sh
-python3 -m pip install -e .
-just --list
-```
-
-`just setup` performs the same editable install. The `codesignal-sim` command
-is available after installation.
-
-## FETCH_ONLY assessment material
-
-The upstream assessment has no license grant recorded for redistribution, so
-its README, task descriptions, starter, and bundled test are never committed
-to this repository. Fetch the seven pinned files only when you need them:
+Python 3.10+ is required and the simulator has no runtime dependencies. Create
+and activate a virtual environment before installing:
 
 ```sh
-just fetch
-# or: python3 scripts/fetch_fixture.py --manifest docs/migration-manifest.json
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e .
+codesignal-sim --help
+python3 -m codesignal_practice_simulator --help
 ```
 
-The fetcher validates every file before atomically placing it in
-`.cache/codesignal-fixtures/6aab304/`. That cache is intentionally ignored by
-Git. Do not add its contents, upstream requirements, or any other vendor
-files to a commit. An offline source tree can be supplied with
-`--source PATH` when network fetching is unavailable.
+The console command and `python3 -m codesignal_practice_simulator` have the
+same commands, options, output envelopes, and exits. Substitute the module
+form for `codesignal-sim` in every command below when a console script is not
+convenient.
 
-## Timed simulator
-
-The canonical timed workflow uses `codesignal-sim` and UUID-named attempt
-directories. It stores authoritative lifecycle state in
-`attempts/<uuid>/session.json`, selects the active attempt with
-`attempts/active.json`, and treats `STATUS.md` as derived output.
-
-```sh
-just fetch
-just practice
-just task 1
-just status
-just time
-just resume
-```
-
-`just practice-drill 1800` starts a drill with a persisted 1,800-second
-duration. The CLI creates only a candidate-facing copy of the six assessment
-files; it never uses the cache as an attempt directory. `test` and `submit`
-are reserved command names while their runtime adapters are being added, so
-they are not part of this workflow.
-
-The installed wheel ships only first-party fixture metadata, never upstream
-bytes. From any directory, set up its local cache with:
+The assessment is FETCH_ONLY: no license grant is recorded to redistribute its
+README, prompts, starter, or bundled test. `fetch` validates the seven pinned
+files and places them under the ignored workspace cache
+`.cache/codesignal-fixtures/6aab304/`. Do not commit cache contents, upstream
+requirements, or other vendor files.
 
 ```sh
 codesignal-sim fetch --workspace-root "$PWD"
-codesignal-sim start --workspace-root "$PWD"
+# Offline: codesignal-sim fetch --workspace-root "$PWD" --source /path/to/complete/source
 ```
 
-Use `--source PATH` with `codesignal-sim fetch` for an offline complete tree.
+The installed package contains only the first-party manifest and hashes, never
+assessment bytes. `start` fails with exit 3 until that workspace's cache is
+valid; rerun `fetch` rather than changing cache files by hand.
 
-## Learn after an attempt
+## Timed workflow
 
-The material tracked here is original learning support:
+Use a dedicated workspace. This example creates a temporary one; its cleanup
+also removes the ignored cache and any candidate attempt it created.
 
-- `study/` contains a blank starter, small cumulative drills, and a checker.
-- `solution/stages/` shows intentionally simple, interview-realistic Python:
-  one complete program after each level, without premature architecture.
-- `solution/simulation.py` is the fully factored reference solution.
-- `notes/` explains the progression and the level-4 ambiguity.
+```sh
+workspace="$(mktemp -d)"
+trap 'rm -rf "$workspace"' EXIT
+codesignal-sim fetch --workspace-root "$workspace"
+codesignal-sim start --workspace-root "$workspace" --mode drill --drill-duration-seconds 1800
+codesignal-sim status --workspace-root "$workspace" --json
+codesignal-sim context --workspace-root "$workspace"
+```
 
-These are post-attempt study and compatibility tools, not another simulator.
-Run `just study-stages` for the staged examples and `just study-spec` for the
-spec-oriented reference checks. `just test-compat` runs the fetched bundled
-test against the reference implementation; it needs the ignored fixture cache.
+`start` defaults to the full `full-90m` profile (5,400 seconds). The named
+drill profile is `drill-30m`, with a default effective duration of 1,800
+seconds; `--drill-duration-seconds` accepts another positive duration and
+persists it. See [drill profiles](docs/drill-profiles.md).
 
-## Level 4: compatibility is not the specification
+Every CLI command works without Just:
 
-The fetched bundled level-4 test treats `ROLLBACK` as a log-only operation.
-The level-4 task text instead requires restoring the state at the requested
-time. The reference implementation makes that distinction explicit: its
-default simulator entry point preserves bundled-test compatibility, while its
-`FileStorage` behavior and `study-spec` enforce real rollback. For an actual
-assessment, implement the stated behavior and treat a conflicting visible
-test as a compatibility concern, not as the specification.
+```text
+fetch   [--source PATH]
+start   [--assessment ID] [--mode {full,drill}] [--drill-duration-seconds SECONDS]
+resume | status | time | test | submit | context [--format {markdown,json}]
+task --level {1,2,3,4}
+```
+
+All commands accept `--workspace-root PATH` after the subcommand; commands
+other than `fetch` and `start` also accept `--attempt UUID`. Without an
+explicit UUID, `attempts/active.json` selects the attempt. An explicit,
+canonical lowercase UUID takes precedence over that pointer; the CLI never
+guesses from directory recency. The complete command, JSON, lifecycle, and
+exit contract is in [docs/cli-contract.md](docs/cli-contract.md).
+
+### Workspace layout
+
+```text
+workspace/
+├── .cache/codesignal-fixtures/6aab304/  # ignored, validated FETCH_ONLY cache
+└── attempts/
+    ├── active.json                      # selected UUID; not session authority
+    └── <uuid>/
+        ├── session.json                 # authoritative lifecycle state
+        ├── events.jsonl                 # lifecycle event log
+        ├── STATUS.md                    # generated, non-authoritative view
+        ├── COACHING.md                  # candidate-owned non-executable text
+        └── candidate-facing copied files
+```
+
+Never hand-edit `session.json`, `events.jsonl`, locks, `active.json`, or
+`STATUS.md`. `attempts/<uuid>/session.json` is the authoritative session
+record. The fixture cache and `attempts/` are deliberately separate.
+
+## Evaluation and submission
+
+`test` scores all four level groups against the selected attempt and persists
+the score. It exits 0 when every group passes and exits 5 only when `test` ran
+and one or more groups were non-passing. `submit` scores and finalizes an
+active or expired attempt once; an expired submission first records expiry,
+then stores the final result. `submit` always exits 0 when it successfully
+finalizes, even when stored groups failed or errored. Repeating `submit`
+returns the stored result with exit 0 and does not rescore or mutate the
+attempt.
+
+`status` and `time` show an overdue attempt as expired and persist that single
+expiry transition with exit 0. `resume` and `test` then exit 4 without scoring
+or changing it. The lifecycle table in [the CLI contract](docs/cli-contract.md#lifecycle-and-expiry)
+defines every state transition.
+
+Use `--json` for the stable `cli/v1` envelope. Exits are 0 (success), 2
+(invalid input), 3 (unavailable or corrupt session/cache), 4 (illegal
+lifecycle operation or lock contention), and 5 (only when `test` runs and any
+group is non-passing).
+
+## Optional Just recipes
+
+`just` is not required. If installed, `just --list` shows shortcuts for the
+same CLI workflow, including `just verify` for the maintained test suite and
+whitespace check. `just setup` creates `.venv` and installs the console CLI
+used by the timed shortcuts. The `test-compat`, `study-spec`, `study-stages`,
+and `study-check` recipes are post-attempt educational or deprecated
+compatibility support, not timed commands.
+
+## Post-attempt learning and compatibility
+
+After submission or an explicit end to timed work, you may opt into
+[`study/`](study/), [`solution/`](solution/), and [`notes/`](notes/). They
+contain learning material and reference behavior; do not use them during a
+live attempt. [`docs/legacy/`](docs/legacy/) is deprecated historical material,
+not a supported workflow.
+
+At Level 4, a bundled visible compatibility test treats `ROLLBACK` as
+log-only, while the written task requires restoring state. Post-attempt
+reference checks keep both interpretations explicit. For an assessment,
+implement the written specification; treat a contradictory visible test as a
+compatibility issue rather than changing the specification. See the
+[post-attempt discrepancy note](notes/level4-rollback-discrepancy.md).
+
+For collaboration boundaries and safe attempt context, read
+[docs/agent-safety.md](docs/agent-safety.md).

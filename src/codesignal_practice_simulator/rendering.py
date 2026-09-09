@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from .errors import SessionUnavailableError
@@ -47,6 +48,44 @@ class AttemptContext:
             revisions.add(event.revision)
         if self.state.revision not in revisions:
             _unavailable()
+
+
+@dataclass(frozen=True, slots=True)
+class ContextResult:
+    """A CLI-safe representation of context in the requested output format."""
+
+    context: AttemptContext
+    output_format: Literal["markdown", "json"]
+
+    def __post_init__(self) -> None:
+        if self.output_format not in ("markdown", "json"):
+            _unavailable()
+
+    def to_dict(self) -> dict[str, object]:
+        if self.output_format == "markdown":
+            return {
+                "format": self.output_format,
+                "context": render_markdown(self.context),
+            }
+        return {"format": self.output_format, "context": _context_document(self.context)}
+
+
+class AttemptContextService:
+    """Read a validated safe view without inspecting candidate-owned inputs."""
+
+    def __init__(self, workspace: WorkspaceManager) -> None:
+        self.workspace = workspace
+
+    def read(
+        self,
+        *,
+        attempt_id: str | None,
+        output_format: Literal["markdown", "json"],
+    ) -> ContextResult:
+        with self.workspace.selected_attempt(attempt_id) as attempt:
+            context = load_attempt_context(attempt, self.workspace.persistence)
+            self.workspace.definition_for_persisted_session(context.state)
+        return ContextResult(context=context, output_format=output_format)
 
 
 class DerivedStatusService:
@@ -99,7 +138,7 @@ def render_markdown(context: AttemptContext) -> str:
     assessment = document["assessment"]
     lifecycle = document["lifecycle"]
     score = document["score"]
-    paths = document["paths"]
+    events = document["events"]
     commands = document["next_legal_commands"]
 
     lines = [
@@ -129,12 +168,18 @@ def render_markdown(context: AttemptContext) -> str:
             ),
             f"- Highest contiguous level: {score['highest_contiguous_level']}",
             "",
-            "## Safe attempt-relative paths",
-            f"- Coaching: `{paths['coaching']}`",
-            (
-                "- Candidate source (read or edit only on the candidate's explicit "
-                f"request): `{paths['candidate_source']}`"
-            ),
+            "## Event history",
+        ]
+    )
+    lines.extend(
+        (
+            f"- Revision {event['revision']}: `{event['name']}` "
+            f"({event['outcome']}) at {event['occurred_at']}"
+        )
+        for event in events
+    )
+    lines.extend(
+        [
             "",
             "## Next legal commands",
         ]
@@ -180,10 +225,6 @@ def refresh_status(
 
 def _context_document(context: AttemptContext) -> dict[str, object]:
     state = context.state
-    paths = {
-        "coaching": _safe_relative_path("COACHING.md"),
-        "candidate_source": _safe_relative_path("simulation.py"),
-    }
     score = _score_document(state)
     return {
         "schema_version": CONTEXT_SCHEMA_VERSION,
@@ -203,7 +244,15 @@ def _context_document(context: AttemptContext) -> dict[str, object]:
             ),
         },
         "score": score,
-        "paths": paths,
+        "events": [
+            {
+                "revision": event.revision,
+                "occurred_at": event.occurred_at.isoformat(),
+                "name": event.name,
+                "outcome": event.outcome,
+            }
+            for event in context.events
+        ],
         "next_legal_commands": _next_legal_commands(state),
     }
 
@@ -221,24 +270,24 @@ def _score_document(state: SessionState) -> dict[str, object]:
 def _next_legal_commands(state: SessionState) -> list[str]:
     prefix = "codesignal-sim"
     selected = f"--attempt {state.attempt_id}"
-    commands = [f"{prefix} status {selected}"]
+    commands = [
+        f"{prefix} status {selected}",
+        f"{prefix} context {selected}",
+    ]
     if state.status == ACTIVE:
         commands.extend(
             (
                 f"{prefix} resume {selected}",
                 f"{prefix} time {selected}",
+                f"{prefix} test {selected}",
+                f"{prefix} submit {selected}",
             )
         )
-    elif state.status not in (EXPIRED, SUBMITTED):
+    elif state.status == EXPIRED:
+        commands.append(f"{prefix} submit {selected}")
+    elif state.status != SUBMITTED:
         _unavailable()
     return commands
-
-
-def _safe_relative_path(value: str) -> str:
-    path = PurePosixPath(value)
-    if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
-        _unavailable()
-    return path.as_posix()
 
 
 def _unavailable() -> None:
@@ -247,7 +296,9 @@ def _unavailable() -> None:
 
 __all__ = [
     "AttemptContext",
+    "AttemptContextService",
     "CONTEXT_SCHEMA_VERSION",
+    "ContextResult",
     "DerivedStatusService",
     "SESSION_UNAVAILABLE_MESSAGE",
     "STATUS_FILENAME",

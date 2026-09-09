@@ -33,6 +33,16 @@ command arguments. `attempts/active.json` uses `active-pointer/v1` and
 contains only its selected canonical attempt ID. It is a selector, not
 session authority.
 
+Before publishing a scored submission, persistence writes an attempt-owned
+`.submission-recovery.json` record containing the exact prior and submitted
+`session/v1` states plus its exact `event/v1` record. While that marker exists,
+any selected-attempt access accepts only the saved prior or submitted state,
+then finishes the event and marker sequence under the attempt lock without
+rerunning the scorer.
+Recovery rejects duplicate event IDs or a conflicting submitted event instead
+of manufacturing another submission. A completed repeat `submit` has no marker
+and is byte-identical: it does not score or write.
+
 ## Lifecycle and expiry
 
 An active session is expired when the injected UTC clock is at or after
@@ -54,11 +64,11 @@ attempt lock and is paired with exactly one event by persistence services.
 
 | Exit | Meaning |
 | --- | --- |
-| 0 | Command completed, including expired `status`/`time` and repeat `submit`. |
+| 0 | Command completed, including expired `status`/`time` and every successfully finalized `submit`, even when stored groups failed or errored. |
 | 2 | Invalid input, including malformed identifiers, unsupported schemas, invalid profiles, or invalid durations. |
 | 3 | Session unavailable or corrupt, including no valid active pointer, malformed persisted state, or a saved assessment that no longer matches the registry. |
 | 4 | Illegal lifecycle operation or lock contention. |
-| 5 | Candidate tests ran and at least one level group did not pass. |
+| 5 | Only the `test` command returns this exit: it ran and at least one group was non-passing. |
 
 Expected domain errors are rendered as safe structured errors in `--json` mode
 and safe messages for people; command adapters do not expose tracebacks.
@@ -80,6 +90,7 @@ codesignal-sim
 ├── test    [--json] [--workspace-root PATH] [--attempt UUID]
 ├── submit  [--json] [--workspace-root PATH] [--attempt UUID]
 └── context [--json] [--workspace-root PATH] [--attempt UUID]
+            [--format {markdown,json}]
 ```
 
 Common options are intentionally after the subcommand. `--workspace-root`
@@ -89,9 +100,14 @@ and takes precedence over the active pointer; the CLI never selects the newest
 directory or guesses an attempt from a timestamp. `start --mode full` rejects
 `--drill-duration-seconds`, and every supplied duration must be positive.
 
-`fetch`, `start`, `resume`, `status`, `time`, and `task` use the production
-application adapter. `test`, `submit`, and `context` remain unavailable until
-their later runtime adapters are configured. The wheel includes a small,
+`fetch`, `start`, `resume`, `status`, `time`, `task`, `test`, `submit`, and
+`context` use production application adapters. `test` and `submit` use the
+attempt-local isolated scorer; selection is held only long enough to choose the
+attempt, while scoring holds only that attempt's lock. `context` reads only
+validated session state and a safe projection of event metadata; it never reads
+candidate source, copied tests, fixtures, or educational/reference material.
+Its `--format` defaults to `markdown`; `json` returns the same safe context
+document as structured data inside the CLI envelope. The wheel includes a small,
 first-party runtime manifest containing only the seven fetch paths and hashes;
 it contains no upstream fixture bytes. It stores the fetched, ignored cache at
 `.cache/codesignal-fixtures/6aab304/` under `--workspace-root`, so installed
@@ -157,3 +173,9 @@ option combinations, serializer failures, and unexpected adapter exceptions
 produce a safe error envelope with no traceback and no CLI-owned mutation.
 Serializer and unexpected-adapter failures use exit 2 with
 `serialization_failed` and `internal_error`, respectively.
+
+For `context`, the requested `--format` controls the `result.context` value:
+Markdown is a deterministic string and JSON is a deterministic object with
+assessment metadata, lifecycle timestamps, score summary, safe event metadata
+(revision, timestamp, name, and outcome), and legal commands. `--json` still
+controls the outer `cli/v1` envelope for both formats.

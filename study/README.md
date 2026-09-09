@@ -1,8 +1,8 @@
-# File storage interview drill
+# Post-attempt study: file storage interview drill
 
-This is a post-attempt study track, not a timed simulator. It treats the
-exercise as one program that grows four times, not as a system to architect up
-front. Do not use its staged answers or explanations during a timed attempt.
+This post-attempt study track is not a timed simulator or compatibility
+workflow. Do not use its staged answers or explanations during a timed attempt;
+only opt in after submission or an explicit end to timed work.
 
 ## Use it today
 
@@ -15,25 +15,20 @@ change while keeping the previous tests green.
 4. Compare with `level1.py`, fix your version, then continue to the next level.
 5. Delete `scratch.py` and do one more run from memory.
 
-From the repository root, the matching post-attempt helper is:
+Run the checker directly from the repository root:
 
 ```bash
-just study-check 1 scratch.py
+python3 study/check.py 1 study/scratch.py
 ```
 
-Use the project virtual environment if `python` is unavailable:
+`just study-check 1 scratch.py` is an optional equivalent shortcut. From this
+directory, the checked-in post-attempt answers can be checked with:
 
 ```bash
-../.venv/bin/python check.py 1 scratch.py
-```
-
-The checked-in answers can be verified with:
-
-```bash
-../.venv/bin/python check.py 1 level1.py
-../.venv/bin/python check.py 2 level2.py
-../.venv/bin/python check.py 3 level3.py
-../.venv/bin/python check.py 4 level4.py
+python3 check.py 1 level1.py
+python3 check.py 2 level2.py
+python3 check.py 3 level3.py
+python3 check.py 4 level4.py
 ```
 
 ## What you need to remember

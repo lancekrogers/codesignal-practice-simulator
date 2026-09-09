@@ -159,27 +159,42 @@ class RenderingTests(unittest.TestCase):
 
         self.assertEqual(document["attempt_id"], self.attempt.name)
         self.assertEqual(
-            document["paths"],
-            {"candidate_source": "simulation.py", "coaching": "COACHING.md"},
+            document["events"],
+            [
+                {
+                    "revision": 0,
+                    "occurred_at": START.isoformat(),
+                    "name": "started",
+                    "outcome": "succeeded",
+                },
+                {
+                    "revision": 1,
+                    "occurred_at": START.isoformat(),
+                    "name": "tested",
+                    "outcome": "succeeded",
+                },
+            ],
         )
         self.assertEqual(document["score"]["levels"], [])
         self.assertEqual(
             document["next_legal_commands"],
             [
                 f"codesignal-sim status --attempt {self.attempt.name}",
+                f"codesignal-sim context --attempt {self.attempt.name}",
                 f"codesignal-sim resume --attempt {self.attempt.name}",
                 f"codesignal-sim time --attempt {self.attempt.name}",
+                f"codesignal-sim test --attempt {self.attempt.name}",
+                f"codesignal-sim submit --attempt {self.attempt.name}",
             ],
         )
-        self.assertNotIn("codesignal-sim context", markdown)
-        self.assertNotIn("codesignal-sim test", markdown)
-        self.assertNotIn("codesignal-sim submit", markdown)
         for forbidden in (
             "candidate source must not render",
             "answer-bearing test output",
             "reference cache content must not render",
             "reference answer must not render",
             "level one",
+            "candidate_source",
+            "simulation.py",
         ):
             self.assertNotIn(forbidden, markdown)
             self.assertNotIn(forbidden, render_json(context))

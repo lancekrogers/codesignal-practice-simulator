@@ -1,22 +1,27 @@
-# ── Post-attempt study and compatibility ────────────────────────────────────
+# ── Maintained verification and post-attempt compatibility ──────────────────
 
-# Bundled assessment tests (levels 1-4) from the ignored fixture cache against
-# the reference solution. This is compatibility verification, not timed play.
+# Run the maintained simulator suite and reject whitespace errors.
+verify:
+    cd {{justfile_directory()}} && {{python}} -m unittest discover -s tests -v
+    cd {{justfile_directory()}} && git diff --check HEAD
+
+# Deprecated post-attempt compatibility check against the fetched bundled test.
+# It is not a timed simulator command and requires the ignored fixture cache.
 test-compat:
     cd {{solution}} && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="{{solution}}:{{assessment}}" {{python}} -m unittest -v test_simulation
 
-# Spec-accurate tests: real rollback, TTL boundaries, error cases
+# Post-attempt, spec-accurate reference tests: rollback, TTL, and error cases.
 study-spec:
     cd {{solution}} && {{python}} -m unittest -v test_spec
 
-# Simple cumulative solutions, one program per assessment level
+# Post-attempt staged reference tests, one cumulative program per level.
 study-stages:
     cd {{solution}} && {{python}} -m unittest -v test_stages
 
-# Every compatibility, reference, and staged suite
+# Deprecated aggregate of post-attempt compatibility and study suites.
 test-all: test-compat study-spec study-stages
 
-# Check a local post-attempt study file against one staged checker.
+# Check a local post-attempt study file against a staged checker.
 study-check level file:
     cd {{justfile_directory()}}/study && {{python}} check.py {{level}} {{file}}
 
