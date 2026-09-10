@@ -64,7 +64,7 @@ async function launchFixture(runtime, fixture) {
     process.env.SIMULATOR_PYTHON || process.env.PYTHON || "python3",
     [fixture.script],
     {
-      cwd: projectRoot,
+      cwd: fixture.installed ? fixture.workspace : projectRoot,
       env: fixtureEnvironment(fixture.installed, fixture.workspace, runtime.port, {
         clockFile: fixture.clockFile,
         openerFile: fixture.openerFile,
@@ -84,7 +84,9 @@ async function launchFixture(runtime, fixture) {
 
 function createFixtureHandle(fixture, runtime) {
   const handle = {
-    ...createContinuityControls(projectRoot, fixture.workspace),
+    ...createContinuityControls(projectRoot, fixture.workspace, {
+      installed: fixture.installed,
+    }),
     ...fixtureControls(fixture, runtime),
   };
   Object.defineProperties(handle, fixtureMetadata(fixture, runtime));
@@ -179,12 +181,19 @@ function fixtureEnvironment(installed, workspace, port, options) {
     SIMULATOR_SERVER_PORT: String(port || 0),
     SIMULATOR_FIXTURE_TOKEN: options.token,
     SIMULATOR_BROWSER_OPENER_FILE: options.openerFile,
-    PYTHONPATH: installed
-      ? ""
-      : [join(projectRoot, "src"), process.env.PYTHONPATH]
-          .filter(Boolean)
-          .join(delimiter),
   };
+  if (installed) {
+    delete environment.PYTHONHOME;
+    delete environment.PYTHONPATH;
+    if (process.env.SIMULATOR_RUNTIME_PATH) {
+      environment.PATH = process.env.SIMULATOR_RUNTIME_PATH;
+    }
+  } else {
+    environment.PYTHONPATH = [
+      join(projectRoot, "src"),
+      process.env.PYTHONPATH,
+    ].filter(Boolean).join(delimiter);
+  }
   environment.SIMULATOR_CLOCK_FILE = options.clockFile;
   environment.SIMULATOR_SCORE_CALLS_FILE = options.scoreCallsFile;
   return environment;
