@@ -82,6 +82,7 @@
 
 .level-navigation {
   display: flex;
+  min-width: 0;
   gap: 1rem;
   align-items: center;
   border-bottom: 1px solid var(--line);
@@ -97,12 +98,21 @@
 }
 
 .level-list {
+  min-width: 0;
+  flex: 1;
   display: flex;
   gap: 0.4rem;
   overflow-x: auto;
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.level-list li {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
 }
 
 .level-button {
@@ -116,6 +126,14 @@
   border-color: var(--accent);
   background: #263b52;
   color: #fff;
+}
+
+.level-status {
+  padding: 0.1rem 0.45rem 0;
+  color: var(--muted);
+  font-size: 0.62rem;
+  line-height: 1.2;
+  white-space: normal;
 }
 
 .level-button:focus-visible,
@@ -179,6 +197,7 @@
 .prompt-copy,
 .pane-heading,
 .editor-pane > .status,
+.source-conflict,
 .output-copy {
   margin-left: 1rem;
   margin-right: 1rem;
@@ -233,6 +252,46 @@
   color: var(--warning);
 }
 
+.output-results,
+.practice-results {
+  margin: 0 1rem 1rem;
+}
+
+.practice-results {
+  padding-left: 1.25rem;
+}
+
+.practice-result {
+  margin-top: 0.6rem;
+}
+
+.practice-result strong {
+  display: block;
+}
+
+.practice-failed strong {
+  color: var(--warning);
+}
+
+.practice-error strong {
+  color: var(--muted);
+}
+
+.output-label {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.practice-result pre {
+  max-height: 6rem;
+  margin: 0.2rem 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .pane-heading {
   display: flex;
   align-items: baseline;
@@ -259,6 +318,38 @@
   font-size: 0.8rem;
 }
 
+.source-conflict {
+  flex: 0 0 auto;
+  margin-top: 0;
+  margin-bottom: 0.6rem;
+  border: 1px solid var(--warning);
+  border-radius: 0.35rem;
+  padding: 0.6rem;
+}
+
+.source-conflict pre,
+.history-item pre {
+  max-height: 8rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.source-conflict button,
+.history-item button {
+  margin-right: 0.4rem;
+}
+
+.history-list {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.history-item {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.8rem;
+}
+
 .editor,
 .fallback {
   width: 100%;
@@ -278,6 +369,55 @@
   color: #e8edf2;
   padding: 1rem;
   font: 0.9rem/1.5 ui-monospace, monospace;
+}
+
+.editor-settings {
+  width: min(28rem, calc(100vw - 2rem));
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--panel);
+  color: var(--text);
+  padding: 1.2rem;
+}
+
+.editor-settings::backdrop {
+  background: rgb(0 0 0 / 65%);
+}
+
+.editor-settings h2 {
+  margin-top: 0;
+}
+
+.editor-settings form {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.editor-settings label {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.editor-settings select {
+  min-width: 9rem;
+}
+
+.editor-settings input[type="checkbox"] {
+  margin-right: auto;
+}
+
+.settings-error {
+  min-height: 1.2rem;
+  margin: 0;
+  color: var(--warning);
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
 }
 
 .action-bar {

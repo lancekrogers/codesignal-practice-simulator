@@ -62,7 +62,7 @@ test("loads Monaco under an explicit offline same-origin policy", async ({ page 
   await expect(page.locator(".sr-status")).toHaveText("Unsaved local edits");
   await verifyWorkersAndManifest(page);
   await verifyFont(page);
-  requestPolicy.assert();
+  await requestPolicy.assert();
   expect(requests.some((url) => url.includes("worker"))).toBe(true);
 });
 
@@ -192,7 +192,16 @@ test("a captured capability outranks readable stale storage when storage write f
   await page.goto(`${harness.origin}/#token=${harness.token}`);
   await confirmStart(page);
   await expect(page.locator(".status")).toHaveText(/Python editor ready/);
-  expect(page.url()).toBe(`${harness.origin}/`);
+  const view = new URL(page.url());
+  expect(view.origin).toBe(harness.origin);
+  const fragment = new URLSearchParams(view.hash.slice(1));
+  expect([...fragment.keys()].sort()).toEqual(["attempt_id", "level", "tab"]);
+  expect(fragment.get("token")).toBeNull();
+  expect(fragment.get("attempt_id")).toBe(
+    await page.locator("main").getAttribute("data-attempt-id"),
+  );
+  expect(fragment.get("level")).toBe("1");
+  expect(fragment.get("tab")).toBe("description");
 });
 test("a stored capability remains usable after reload", async ({ page }) => {
   await page.goto(`${harness.origin}/#token=${harness.token}`);
@@ -245,12 +254,14 @@ async function verifyReadOnlyFallback(page, candidateSource) {
   await expect(page.locator(".fallback")).toHaveAttribute("readonly", "");
   await expect(page.locator(".fallback")).toHaveValue(candidateSource);
   const controls = await page.locator(
-    'button, input:not([type="hidden"]), select, [role="button"], [data-action], [data-mutation]',
+    '[data-mutation="true"]',
   ).evaluateAll((items) => items.filter((control) =>
     !control.hasAttribute("disabled") &&
     control.getAttribute("aria-disabled") !== "true",
   ));
   expect(controls).toHaveLength(0);
+  await expect(page.getByRole("button", { name: "Skip" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Next" })).toBeEnabled();
 }
 
 async function verifyFallbackWorkers(page) {

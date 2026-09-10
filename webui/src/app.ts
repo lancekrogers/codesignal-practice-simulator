@@ -1,38 +1,31 @@
 import {
   apiGet,
   apiPost,
-  ApiError,
   captureCapability,
   describeApiError,
   loadManifest,
   type StaticManifest,
 } from "./api";
-import { initializeEditor } from "./editor";
 import {
-  attemptState,
-  createCountdown,
   entryState,
   errorState,
   initialState,
   normalizeAttempt,
   normalizeBootstrap,
   normalizeTime,
-  workerUrls,
   type Bootstrap,
 } from "./state";
 import {
-  renderAttemptShell,
   renderBooting,
   renderEntry,
   renderError,
   renderReconnect,
-  showEditor,
-  showFallback,
-  type ShellElements,
 } from "./views";
-import { createPromptController } from "./prompt_controller";
-
-let currentAttemptCleanup: (() => void) | null = null;
+import {
+  disposeAttempt,
+  showAttempt,
+  showTerminalAttempt,
+} from "./attempt_runtime";
 
 async function start(): Promise<void> {
   captureCapability();
@@ -48,7 +41,10 @@ async function start(): Promise<void> {
     renderError(root, errorState(
       manifest,
       describeApiError(error, "bootstrap").message,
-    ), { label: "Reload local simulator", onClick: () => window.location.reload() });
+    ), {
+      label: "Reload local simulator",
+      onClick: () => window.location.reload(),
+    });
   }
 }
 
@@ -81,9 +77,9 @@ function showEntry(
         elements.destroy();
         showAttempt(root, manifest, bootstrap, payload);
       } catch (error) {
-        const retryable = error instanceof ApiError &&
+        const retryable = error instanceof Error &&
           ["session_unavailable", "lifecycle_locked", "invalid_input"]
-            .includes(error.code);
+            .includes((error as { code?: string }).code || "");
         elements.setBusy(!retryable);
         elements.setMessage(describeApiError(error, "start").message);
         if (retryable) startRequested = false;
@@ -109,21 +105,19 @@ async function reconnect(
   try {
     const query = `?attempt_id=${encodeURIComponent(bootstrap.session.attempt_id)}`;
     const time = normalizeTime((await apiGet(`/api/time${query}`)).data);
+    if (time.session.attempt_id !== bootstrap.session.attempt_id) {
+      throw new Error("time response is invalid");
+    }
     if (time.session.status !== "active") {
-      showAttempt(root, manifest, bootstrap, {
-        session: time.session,
-        source: null,
-        time,
-      });
+      await showTerminalAttempt(root, manifest, bootstrap, time);
       return;
     }
-    const sourceDocument = await apiGet(`/api/source${query}`);
-    const payload = normalizeAttempt({
+    const source = await apiGet(`/api/source${query}`);
+    showAttempt(root, manifest, bootstrap, normalizeAttempt({
       session: time.session,
-      source: sourceDocument.data,
+      source: source.data,
       time,
-    });
-    showAttempt(root, manifest, bootstrap, payload);
+    }));
   } catch (error) {
     renderError(root, errorState(
       manifest,
@@ -133,112 +127,6 @@ async function reconnect(
       onClick: () => void reconnect(root, manifest, bootstrap),
     });
   }
-}
-
-function showAttempt(
-  root: HTMLElement,
-  manifest: StaticManifest,
-  bootstrap: Bootstrap,
-  payload: ReturnType<typeof normalizeAttempt>,
-): void {
-  disposeAttempt();
-  const state = attemptState(manifest, bootstrap, payload);
-  let elements: ShellElements;
-  let promptController: ReturnType<typeof createPromptController> | null = null;
-  elements = renderAttemptShell(root, state, {
-    onLevelSelect: (level) => {
-      promptController?.selectLevel(level);
-    },
-    onPromptTab: (tab) => {
-      promptController?.selectTab(tab);
-    },
-  });
-  promptController = createPromptController(elements, state);
-  let editorHandle: { dispose(): void } | undefined;
-  let countdown: { stop(): void } | undefined;
-  let disposed = false;
-  const cleanup = (): void => {
-    if (disposed) return;
-    disposed = true;
-    promptController?.dispose();
-    countdown?.stop();
-    editorHandle?.dispose();
-    elements.destroy();
-    if (currentAttemptCleanup === cleanup) currentAttemptCleanup = null;
-  };
-  currentAttemptCleanup = cleanup;
-
-  if (state.session.status !== "active" || state.source === null) return;
-  editorHandle = startEditor(elements, state.source, manifest);
-  countdown = startAttemptCountdown(
-    root,
-    manifest,
-    bootstrap,
-    payload,
-    elements,
-    cleanup,
-  );
-  promptController.loadInitial();
-}
-
-function startEditor(
-  elements: ShellElements,
-  source: string,
-  manifest: StaticManifest,
-): { dispose(): void } | undefined {
-  try {
-    const editor = initializeEditor(
-      elements,
-      source,
-      workerUrls(manifest),
-      () => elements.setSaveState(true),
-    );
-    showEditor(elements);
-    return editor;
-  } catch {
-    showFallback(elements, "The Python editor could not initialize.");
-    return undefined;
-  }
-}
-
-function startAttemptCountdown(
-  root: HTMLElement,
-  manifest: StaticManifest,
-  bootstrap: Bootstrap,
-  payload: ReturnType<typeof normalizeAttempt>,
-  elements: ShellElements,
-  cleanup: () => void,
-): { stop(): void } {
-  return createCountdown(
-    payload.time,
-    (update) => {
-      elements.setCountdown(update.remainingSeconds);
-      if (update.session.status !== "active") {
-        cleanup();
-        showAttempt(root, manifest, bootstrap, {
-          session: update.session,
-          source: null,
-          time: update.time,
-        });
-      }
-    },
-    async () => {
-      elements.setConnection("reconnecting");
-      const query = `?attempt_id=${encodeURIComponent(payload.session.attempt_id)}`;
-      const next = normalizeTime((await apiGet(`/api/time${query}`)).data);
-      if (next.session.attempt_id !== payload.session.attempt_id) {
-        throw new Error("time response is invalid");
-      }
-      elements.setConnection("connected");
-      return next;
-    },
-    () => elements.setConnection("reconnecting"),
-  );
-}
-
-function disposeAttempt(): void {
-  currentAttemptCleanup?.();
-  currentAttemptCleanup = null;
 }
 
 if (document.readyState === "loading") {

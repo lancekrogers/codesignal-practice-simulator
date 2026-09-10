@@ -346,6 +346,7 @@ def _evaluation_snapshot(snapshot: EvaluationSnapshot) -> dict[str, object]:
         snapshot.state,
         snapshot.time,
         snapshot.source,
+        practice=snapshot.practice,
         newly_submitted=snapshot.newly_submitted,
     )
 

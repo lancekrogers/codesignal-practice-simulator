@@ -4,7 +4,6 @@ import type {
   EntryState,
   Mode,
   BrowserState,
-  PromptTab,
 } from "./state";
 import {
   buildAttemptShell,

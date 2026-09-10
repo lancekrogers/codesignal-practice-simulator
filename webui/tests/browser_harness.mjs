@@ -1,53 +1,104 @@
 import { spawn } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
 import { expect } from "@playwright/test";
+import { writeClock } from "./clock_file.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
-export async function startFixtureServer() {
+export async function startFixtureServer(options = {}) {
   const installed = Boolean(process.env.SIMULATOR_SERVER_SCRIPT);
   const script = installed
     ? resolve(projectRoot, process.env.SIMULATOR_SERVER_SCRIPT)
     : join(projectRoot, "webui", "tests", "fixture_server.py");
-  const child = spawn(
-    process.env.SIMULATOR_PYTHON || process.env.PYTHON || "python3",
-    [script],
-    {
-      cwd: projectRoot,
-      env: fixtureEnvironment(installed),
-      stdio: ["pipe", "pipe", "pipe"],
-    },
-  );
+  const workspace = await mkdtemp(join(tmpdir(), "codesignal-browser-fixture-"));
+  const clockFile = join(workspace, "test-clock.txt");
+  const scoreCallsFile = join(workspace, "score-calls.txt");
+  if (options.clockStart) await writeFile(clockFile, options.clockStart, "utf8");
+  let child;
+  let details;
+  let port = 0;
+  const launch = async () => {
+    child = spawn(
+      process.env.SIMULATOR_PYTHON || process.env.PYTHON || "python3",
+      [script],
+      {
+        cwd: projectRoot,
+        env: fixtureEnvironment(installed, workspace, port, {
+          clockFile: options.clockStart ? clockFile : undefined,
+          scoreCallsFile,
+        }),
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    return readReadyLine(child);
+  };
   try {
-    const details = await readReadyLine(child);
+    details = await launch();
     if (!details?.origin || !details?.token) {
       throw new Error("fixture server emitted incomplete startup data");
     }
+    port = Number(new URL(details.origin).port);
     let closePromise;
     return {
-      origin: details.origin,
-      token: details.token,
-      close() {
-        closePromise ??= stopChild(child);
+      get origin() {
+        return details.origin;
+      },
+      get token() {
+        return details.token;
+      },
+      async setClock(value) {
+        if (!options.clockStart) throw new Error("fixture clock is not controlled");
+        await writeClock(clockFile, value);
+      },
+      async scoreCalls() {
+        try {
+          return (await readFile(scoreCallsFile, "utf8")).trim().split("\n")
+            .filter(Boolean).length;
+        } catch (error) {
+          if (error.code === "ENOENT") return 0;
+          throw error;
+        }
+      },
+      async attemptEvents(attemptId) {
+        const path = join(workspace, "attempts", attemptId, "events.jsonl");
+        const lines = (await readFile(path, "utf8")).trim().split("\n").filter(Boolean);
+        return lines.map((line) => JSON.parse(line).name);
+      },
+      async restart() {
+        await stopChild(child);
+        details = await launch();
+      },
+      async close() {
+        closePromise ??= stopChild(child).then(() =>
+          rm(workspace, { recursive: true, force: true }),
+        );
         return closePromise;
       },
     };
   } catch (error) {
     await stopChild(child);
+    await rm(workspace, { recursive: true, force: true });
     throw error;
   }
 }
 
-function fixtureEnvironment(installed) {
-  return {
+function fixtureEnvironment(installed, workspace, port, options) {
+  const environment = {
     ...process.env,
+    SIMULATOR_WORKSPACE: workspace,
+    SIMULATOR_SERVER_PORT: String(port || 0),
     PYTHONPATH: installed
       ? ""
       : [join(projectRoot, "src"), process.env.PYTHONPATH]
           .filter(Boolean)
           .join(delimiter),
   };
+  if (options.clockFile) environment.SIMULATOR_CLOCK_FILE = options.clockFile;
+  environment.SIMULATOR_SCORE_CALLS_FILE = options.scoreCallsFile;
+  return environment;
 }
 
 function readReadyLine(child) {
@@ -137,12 +188,14 @@ export function installOfflineRequestPolicy(page, harness) {
     blockedRequests: [],
     relevantRequests: new Map(),
     relevantResponses: new Map(),
+    settledRequests: new Set(),
     sameOriginRequests: [],
     failedRequests: [],
     unsuccessfulResponses: [],
     consoleErrors: [],
     pageErrors: [],
     expectedHttpErrors: new Set(),
+    expectedConsoleErrors: new Set(),
     interceptions: new Map(),
     delays: new Map(),
   };
@@ -155,11 +208,23 @@ export function installOfflineRequestPolicy(page, harness) {
   page.on("pageerror", (error) => state.pageErrors.push(error.message));
   page.route("**/*", (route) => routeRequest(route, state));
   return {
+    refreshOrigin() {
+      state.expectedOrigin = harness.origin;
+    },
     forceMonacoInitializationFailure() {
       state.patchApplication = true;
     },
     intercept(path, response) {
       state.interceptions.set(path, response);
+    },
+    clearIntercept(path) {
+      state.interceptions.delete(path);
+    },
+    expectHttpError(status) {
+      state.expectedHttpErrors.add(status);
+    },
+    expectConsoleError(message) {
+      state.expectedConsoleErrors.add(message);
     },
     delay(path, milliseconds) {
       state.delays.set(path, milliseconds);
@@ -169,7 +234,7 @@ export function installOfflineRequestPolicy(page, harness) {
       assertSuccessfulAssets(state, requiredNames);
     },
     assert() {
-      assertPolicyState(state);
+      return assertPolicyState(state);
     },
   };
 }
@@ -198,6 +263,7 @@ function trackResponse(response, state) {
   const request = response.request();
   if (!isRelevantRequest(request, state.expectedOrigin)) return;
   state.relevantResponses.set(request, response);
+  state.settledRequests.add(request);
   if (response.status() < 200 || response.status() >= 400) {
     state.unsuccessfulResponses.push({
       status: response.status(),
@@ -209,6 +275,7 @@ function trackResponse(response, state) {
 
 function trackFailure(request, state) {
   if (!isRelevantRequest(request, state.expectedOrigin)) return;
+  state.settledRequests.add(request);
   state.failedRequests.push({
     error: request.failure()?.errorText || "unknown request failure",
     resourceType: request.resourceType(),
@@ -310,12 +377,22 @@ function assetName(value, expectedOrigin) {
   return url.pathname.startsWith("/") ? url.pathname.slice(1) : undefined;
 }
 
-function assertPolicyState(state) {
+async function assertPolicyState(state) {
+  await expect.poll(
+    () => [...state.relevantRequests.entries()]
+      .filter(([request]) => !state.settledRequests.has(request))
+      .map(([, details]) => details),
+    {
+      message: "relevant same-origin static requests did not settle",
+      timeout: 5000,
+    },
+  ).toEqual([]);
   expect(state.blockedRequests).toEqual([]);
   expect(state.failedRequests).toEqual([]);
   expect(state.unsuccessfulResponses).toEqual([]);
-  expect(state.consoleErrors.filter(
-    (message) => !isExpectedHttpConsoleError(message, state.expectedHttpErrors),
+  expect(state.consoleErrors.filter((message) =>
+    !isExpectedHttpConsoleError(message, state.expectedHttpErrors) &&
+    !state.expectedConsoleErrors.has(message),
   )).toEqual([]);
   expect(state.pageErrors).toEqual([]);
   for (const request of state.sameOriginRequests) {
@@ -324,10 +401,6 @@ function assertPolicyState(state) {
       `undocumented same-origin request: ${JSON.stringify(request)}`,
     ).toBe(true);
   }
-  const pending = [...state.relevantRequests.entries()]
-    .filter(([request]) => !state.relevantResponses.has(request))
-    .map(([, details]) => details);
-  expect(pending).toEqual([]);
   for (const details of state.relevantRequests.values()) {
     expect(new URL(details.url).origin).toBe(state.expectedOrigin);
   }
@@ -354,7 +427,17 @@ function isDocumentedRequest(path) {
   }
   if (path.startsWith("/api/")) {
     return (
-      ["/api/bootstrap", "/api/attempts", "/api/source", "/api/time"].includes(path) ||
+      [
+        "/api/bootstrap",
+        "/api/attempts",
+        "/api/source",
+        "/api/source/history",
+        "/api/source/reset",
+        "/api/source/restore",
+        "/api/time",
+        "/api/test",
+        "/api/submit",
+      ].includes(path) ||
       /^\/api\/prompts\/[1-4]$/u.test(path)
     );
   }

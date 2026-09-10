@@ -7,7 +7,9 @@ export type ApiDocument = {
 export type ApiAction =
   | "bootstrap"
   | "start"
-  | "reconnect";
+  | "reconnect"
+  | "testing"
+  | "submitting";
 
 export type SafeApiFailure = {
   kind:
@@ -70,21 +72,62 @@ export async function loadManifest(): Promise<StaticManifest> {
   return value as StaticManifest;
 }
 
-export async function apiGet(path: string): Promise<ApiDocument> {
-  return apiRequest("GET", path);
+export async function apiGet(path: string, signal?: AbortSignal): Promise<ApiDocument> {
+  return apiRequest("GET", path, undefined, undefined, signal);
 }
 
 export async function apiPost(
   path: string,
   body: Record<string, unknown>,
+  ifMatch?: string,
+  signal?: AbortSignal,
 ): Promise<ApiDocument> {
-  return apiRequest("POST", path, body);
+  return apiRequest("POST", path, body, ifMatch, signal);
+}
+
+export async function apiPut(
+  path: string,
+  body: Record<string, unknown>,
+  ifMatch: string,
+  signal?: AbortSignal,
+): Promise<ApiDocument> {
+  return apiRequest("PUT", path, body, ifMatch, signal);
+}
+
+export function testAttempt(
+  attemptId: string,
+  content: string,
+  etag: string,
+  signal?: AbortSignal,
+): Promise<ApiDocument> {
+  return apiPost(
+    `/api/test?attempt_id=${encodeURIComponent(attemptId)}`,
+    { content },
+    etag,
+    signal,
+  );
+}
+
+export function submitAttempt(
+  attemptId: string,
+  content: string,
+  etag: string,
+  signal?: AbortSignal,
+): Promise<ApiDocument> {
+  return apiPost(
+    `/api/submit?attempt_id=${encodeURIComponent(attemptId)}`,
+    { content },
+    etag,
+    signal,
+  );
 }
 
 async function apiRequest(
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PUT",
   path: string,
   body?: Record<string, unknown>,
+  ifMatch?: string,
+  signal?: AbortSignal,
 ): Promise<ApiDocument> {
   let response: Response;
   try {
@@ -92,12 +135,15 @@ async function apiRequest(
       method,
       headers: {
         "X-Simulator-Token": capability(),
+        ...(ifMatch ? { "If-Match": ifMatch } : {}),
         ...(body ? { "Content-Type": "application/json" } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
+      signal,
       cache: "no-store",
     });
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw error;
     throw new ApiError("reconnect", "the local simulator could not be reached");
   }
   let document: ApiDocument;
@@ -145,6 +191,13 @@ export function describeApiError(
         recovery: action === "start" ? "reconnect" : "none",
       };
     case "reconnect":
+      if (action === "testing" || action === "submitting") {
+        return {
+          kind: "internal",
+          message: genericMessage(action),
+          recovery: "reconnect",
+        };
+      }
       return {
         kind: "reconnect",
         message: "The local simulator could not be reached. Check that it is running, then reconnect.",
@@ -170,6 +223,12 @@ function genericMessage(action: ApiAction): string {
   }
   if (action === "reconnect") {
     return "The selected session could not be restored safely. Reconnect to the local simulator.";
+  }
+  if (action === "testing") {
+    return "The local practice check could not complete safely. Try again.";
+  }
+  if (action === "submitting") {
+    return "The submission could not complete safely. Try again.";
   }
   return "The local simulator could not complete this entry action safely. Reconnect and try again.";
 }

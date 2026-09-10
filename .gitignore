@@ -17,6 +17,7 @@ webui/node_modules/
 webui/.cache/
 webui/.playwright/
 webui/playwright-report/
+webui/.test-results/
 webui/test-results/
 webui/.tmp/
 

@@ -23,6 +23,10 @@ from .errors import (
     FixtureSetupRequiredError,
     InvalidInputError,
 )
+from .evaluation_results import (
+    PracticeResult,
+    practice_result_from_score,
+)
 from .evaluation import EvaluationService
 from .filesystem import Filesystem, LocalFilesystem
 from .fixture_setup import FixtureSetupError, populate_runtime_fixture
@@ -49,6 +53,7 @@ class EvaluationSnapshot:
     state: SessionState
     time: TimeObservation
     source: CandidateDocument
+    practice: PracticeResult | None = None
     newly_submitted: bool = False
 
 
@@ -103,12 +108,16 @@ class RuntimeApplication:
         self.contexts = AttemptContextService(self.workspace)
         self.derived_status = DerivedStatusService(self.workspace)
         self._action_lock = threading.RLock()
+        self._practice_results: dict[str, PracticeResult] = {}
 
     def _score_selected_attempt(self, attempt: Path) -> ScoreSummary:
         """Build the registered assessment scorer for one selected attempt."""
         state = self.workspace.persistence.read_session(attempt)
         definition = self.workspace.definition_for_persisted_session(state)
-        return self.scorer_factory(definition)(attempt)
+        scorer = self.scorer_factory(definition)
+        score = scorer(attempt)
+        self._practice_results[state.attempt_id] = practice_result_from_score(score)
+        return score
 
     def fetch(self, *, source: Path | None) -> dict[str, object]:
         """Populate this workspace's ignored fixture cache from packaged metadata."""
@@ -282,7 +291,10 @@ class RuntimeApplication:
                 state = self._test_locked(attempt_id, source_content, if_match)
             except CandidateFailureError:
                 state = self.lifecycle.status(attempt_id)
-            return self._evaluation_snapshot_locked(state)
+            return self._evaluation_snapshot_locked(
+                state,
+                practice=self._practice_for_state(state),
+            )
 
     def submit(
         self,
@@ -305,7 +317,9 @@ class RuntimeApplication:
         with self._action_lock:
             result = self._submit_locked(attempt_id, source_content, if_match)
             return self._evaluation_snapshot_locked(
-                result.state, newly_submitted=result.newly_submitted
+                result.state,
+                practice=self._practice_for_state(result.state),
+                newly_submitted=result.newly_submitted,
             )
 
     def _test_locked(
@@ -360,7 +374,11 @@ class RuntimeApplication:
         return result
 
     def _evaluation_snapshot_locked(
-        self, state: SessionState, *, newly_submitted: bool = False
+        self,
+        state: SessionState,
+        *,
+        practice: PracticeResult | None = None,
+        newly_submitted: bool = False,
     ) -> EvaluationSnapshot:
         observation = self.lifecycle.time(state.attempt_id)
         source = self.candidate_documents.read(state.attempt_id)
@@ -368,7 +386,15 @@ class RuntimeApplication:
             state=observation.state,
             time=observation,
             source=source,
+            practice=practice,
             newly_submitted=newly_submitted,
+        )
+
+    def _practice_for_state(self, state: SessionState) -> PracticeResult | None:
+        if state.score is None:
+            return None
+        return self._practice_results.get(state.attempt_id) or practice_result_from_score(
+            state.score,
         )
 
     def _save_before_evaluation(

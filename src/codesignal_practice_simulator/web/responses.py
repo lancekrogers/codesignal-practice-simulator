@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from ..candidate_document_models import CandidateDocument, SourceHistory
+from ..evaluation_results import PracticeResult
 from ..lifecycle import TimeObservation
 from ..models import ScoreSummary, SessionState
 
@@ -109,6 +110,7 @@ def evaluation_document(
     observation: TimeObservation,
     source: CandidateDocument,
     *,
+    practice: PracticeResult | None = None,
     newly_submitted: bool = False,
 ) -> dict[str, object]:
     return {
@@ -116,6 +118,7 @@ def evaluation_document(
         "time": time_document(observation),
         "source": source_document(source),
         "score": None if state.score is None else score_document(state.score),
+        "practice": None if practice is None else practice.to_dict(),
         "newly_submitted": newly_submitted,
     }
 
