@@ -55,6 +55,36 @@ drill profile is `drill-30m`, with a default effective duration of 1,800
 seconds; `--drill-duration-seconds` accepts another positive duration and
 persists it. See [drill profiles](docs/drill-profiles.md).
 
+### Browser and terminal coaching
+
+The browser UI and direct CLI are two transports for the same attempt. Keep
+the web server running in one terminal, then use a second terminal after the
+browser starts an attempt:
+
+```sh
+# Terminal 1
+codesignal-sim web --workspace-root "$workspace"
+
+# Terminal 2
+codesignal-sim context --workspace-root "$workspace"
+```
+
+The `web` command serves the loopback browser and opens it; it does not create
+a second lifecycle authority. `context` and the generated `STATUS.md` are safe,
+derived views. The server-authoritative timer, scoring, and lifecycle own the
+result. Candidate source and source history belong to the candidate, while
+`COACHING.md` is candidate-owned, non-executable text for candidate-approved
+goals, questions, and high-level hints.
+
+During timed work, read derived context first and ask explicit permission
+before reading source or history. Never read or use reference, study, vendor,
+fixture cache, copied tests, or hidden-test material; never import or execute
+coaching in `simulation.py`, make hidden-test claims, or manually edit
+`session.json`, `events.jsonl`, `STATUS.md`, locks, or `active.json`. Verify
+browser state through the server response and `status`, `time`, `context`,
+`test`, or `submit`. This is process guidance, not same-user isolation.
+It is operational policy, not a security sandbox.
+
 Every CLI command works without Just:
 
 ```text

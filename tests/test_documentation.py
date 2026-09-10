@@ -110,10 +110,10 @@ class DocumentationTests(unittest.TestCase):
         )
 
         self.assertIn("codesignal-sim context", policy)
-        self.assertIn("explicit candidate permission", policy)
-        self.assertIn("not a sandbox", policy)
+        self.assertIn("explicit permission", policy)
+        self.assertIn("not a security sandbox", policy)
         self.assertIn("codesignal-sim context", safety)
-        self.assertIn("does not claim to sandbox", safety)
+        self.assertIn("not a security sandbox", " ".join(safety.split()))
         self.assertIn("Deprecated historical archive", legacy)
         self.assertIn("retired and unsupported", legacy)
         self.assertIn("## Layout", legacy)
@@ -122,6 +122,47 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn("Do not test a submitted attempt.", walkthrough)
         self.assertIn("start a new drill or attempt", walkthrough)
         self.assertIn("post-attempt checkers", walkthrough)
+
+    def test_coaching_policy_surfaces_agree_without_claiming_isolation(self) -> None:
+        template = (PROJECT / "src/codesignal_practice_simulator/workspace.py").read_text(
+            encoding="utf-8"
+        )
+        surfaces = {
+            "root policy": (PROJECT / "AGENTS.md").read_text(encoding="utf-8"),
+            "safety guide": (PROJECT / "docs" / "agent-safety.md").read_text(
+                encoding="utf-8"
+            ),
+            "readme": (PROJECT / "README.md").read_text(encoding="utf-8"),
+            "attempt template": template,
+        }
+        required = (
+            "STATUS.md",
+            "COACHING.md",
+            "explicit permission",
+            "source history",
+            "reference",
+            "study",
+            "vendor",
+            "fixture cache",
+            "copied tests",
+            "hidden-test",
+            "simulation.py",
+            "session.json",
+            "events.jsonl",
+            "locks",
+            "same-user",
+        )
+        for name, document in surfaces.items():
+            normalized = " ".join(document.lower().split())
+            with self.subTest(surface=name):
+                for phrase in required:
+                    self.assertIn(phrase.lower(), normalized)
+                self.assertIn("not a security sandbox", normalized)
+
+        self.assertIn("browser ui", surfaces["readme"].lower())
+        self.assertIn("direct cli", surfaces["readme"].lower())
+        self.assertIn("timer, scoring, and lifecycle", surfaces["readme"].lower())
+        self.assertIn("post-attempt", surfaces["safety guide"].lower())
 
 
 if __name__ == "__main__":

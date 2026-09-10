@@ -1,38 +1,43 @@
 # Agent safety during timed attempts
 
-Timed attempts use an operational collaboration policy, not a security or
-access-control boundary. This project does not claim to sandbox an agent or
-other process running as the same user; such a process can read or alter local
-files despite these instructions.
+This is an operational collaboration policy, not a security or access-control
+boundary. It does not sandbox an agent or a same-user process; that process
+can still read or alter local files. This is operational policy, not a security
+sandbox.
 
 ## Live-session boundary
 
-Before acting, inspect safe generated context with
-`codesignal-sim context --workspace-root PATH`, or read the selected attempt's
-generated `STATUS.md`. Both are derived from validated `session.json` and
-`events.jsonl`, are non-authoritative, and never contain candidate source,
-answer-bearing test output, copied prompts, fixtures, or reference content.
-`context --format json --json` provides the same safe context in the stable
-CLI envelope for automation.
+Use this sequence:
 
-During a timed session:
+1. Launch the loopback browser from a fetched workspace:
+   `codesignal-sim web --workspace-root "$workspace"`.
+2. After the browser starts an attempt, inspect
+   `codesignal-sim context --workspace-root "$workspace"` or the selected
+   attempt's generated `STATUS.md`. For automation, use
+   `codesignal-sim context --workspace-root "$workspace" --format json --json`.
+3. Use candidate-owned `COACHING.md` for candidate-approved goals, questions,
+   and high-level hints. Ask explicit permission before reading candidate
+   source or source history, and ask separately before editing source.
+4. Verify browser state through the server response and the CLI's `status`,
+   `time`, `context`, `test`, or `submit` commands.
 
-- Treat `COACHING.md` as candidate-owned, non-executable text and edit it by
-  default.
-- Read or edit candidate code only when the candidate gives explicit
-  permission. Permission to inspect candidate code does not extend to
-  references or answers.
-- Never manually edit structured or generated state: `session.json`,
-  `events.jsonl`, locks, `active.json`, or `STATUS.md`.
-- Never use or reveal assessment reference, solution, stages, walkthrough, or
-  study answers. A request to edit candidate code does not authorize those
-  sources.
+The browser UI and direct CLI are separate transports for the same attempt.
+The server-authoritative timer, scoring, and lifecycle own the result.
+Candidate source and source history belong to the candidate; `COACHING.md` is
+candidate-owned non-executable text; `session.json` and `events.jsonl` are
+simulator-owned authoritative state; `STATUS.md` is a generated view.
 
-## Post-submission education
+During timed work, never read or use reference, solution, stages, walkthrough,
+study, vendor, fixture cache, copied tests, or hidden-test material. Never
+import or execute coaching in `simulation.py`, make hidden-test claims, or
+manually edit `session.json`, `events.jsonl`, `STATUS.md`, locks, or
+`active.json`. Coaching permission does not authorize protected material.
 
-After submission or an explicit end to timed work, the candidate can choose to
-use the learning materials in [`study/`](../study/), the reference and staged
-solutions in [`solution/`](../solution/), and the
-[walkthrough](../notes/walkthrough.md). The [Level-4 discrepancy note](../notes/level4-rollback-discrepancy.md)
-and deprecated compatibility recipes also belong only to this post-submission
-educational path, never live context.
+## Post-attempt education
+
+After submission or an explicit end to timed work, the candidate may opt into
+the learning materials in [`study/`](../study/), reference and staged
+solutions in [`solution/`](../solution/), the
+[`walkthrough`](../notes/walkthrough.md), and deprecated compatibility
+recipes. These remain outside live context; the Level-4 discrepancy note
+belongs to this post-attempt path too.

@@ -6,7 +6,7 @@ import hashlib
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -42,6 +42,16 @@ START = datetime(2026, 9, 8, 19, 0, tzinfo=timezone.utc)
 class FakeClock:
     def now(self) -> datetime:
         return START
+
+
+class ControlledClock:
+    def __init__(self, *values: datetime) -> None:
+        self.values = list(values)
+
+    def now(self) -> datetime:
+        if not self.values:
+            raise AssertionError("controlled clock was observed unexpectedly")
+        return self.values.pop(0)
 
 
 def make_cache(root: Path) -> ValidatedFixtureCache:
@@ -194,6 +204,86 @@ class ApplicationCompositionTests(unittest.TestCase):
             self.assertEqual(len(scorer_calls), 1)
             self.assertEqual(scorer_calls[0][1], attempt.resolve())
             self.assertIn("tested", (attempt / "STATUS.md").read_text())
+
+    def test_success_snapshot_refreshes_status_after_final_deadline_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            deadline = START + timedelta(seconds=1)
+            score = ScoreSummary(tuple(LevelResult(level, "passed") for level in range(1, 5)))
+            application = self._snapshot_application(
+                root,
+                ControlledClock(START, START, START, deadline),
+                score,
+            )
+            started = application.start(
+                assessment="file_storage",
+                mode="drill",
+                drill_duration_seconds=1,
+            )
+
+            snapshot = application.test_snapshot(attempt_id=started.attempt_id)
+
+            self._assert_expired_snapshot(
+                application,
+                snapshot,
+                started.attempt_id,
+                ["started", "tested", "expired"],
+            )
+
+    def test_candidate_failure_snapshot_refreshes_status_after_final_deadline_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            deadline = START + timedelta(seconds=1)
+            score = ScoreSummary(tuple(LevelResult(level, "failed") for level in range(1, 5)))
+            application = self._snapshot_application(
+                root,
+                ControlledClock(START, START, START, START, START, deadline),
+                score,
+            )
+            started = application.start(
+                assessment="file_storage",
+                mode="drill",
+                drill_duration_seconds=1,
+            )
+
+            snapshot = application.test_snapshot(attempt_id=started.attempt_id)
+
+            self._assert_expired_snapshot(
+                application,
+                snapshot,
+                started.attempt_id,
+                ["started", "tested", "expired"],
+            )
+
+    def _snapshot_application(
+        self, root: Path, clock: ControlledClock, score: ScoreSummary
+    ) -> RuntimeApplication:
+        workspace_root = root / "workspace"
+        workspace_root.mkdir()
+        return RuntimeApplication(
+            workspace_root,
+            clock=clock,
+            cache=make_cache(root),
+            scorer_factory=lambda _definition: lambda _attempt: score,
+        )
+
+    def _assert_expired_snapshot(
+        self,
+        application: RuntimeApplication,
+        snapshot,
+        attempt_id: str,
+        event_names: list[str],
+    ) -> None:
+        self.assertEqual(snapshot.state.status, "expired")
+        self.assertEqual(snapshot.time.state.status, "expired")
+        attempt = application.workspace.attempts_directory / attempt_id
+        self.assertIn("- Status: `expired`", (attempt / "STATUS.md").read_text())
+        context = application.context(
+            attempt_id=attempt_id,
+            output_format="json",
+        ).to_dict()["context"]
+        self.assertEqual(context["lifecycle"]["status"], "expired")
+        self.assertEqual([event["name"] for event in context["events"]], event_names)
 
 
 if __name__ == "__main__":

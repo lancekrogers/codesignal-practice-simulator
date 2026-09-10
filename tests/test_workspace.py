@@ -278,6 +278,44 @@ class WorkspaceTests(unittest.TestCase):
         self.assertFalse((selected / CREATION_MARKER).exists())
         self.assertTrue(inactive.exists())
 
+    def test_attempt_templates_preserve_coaching_and_permission_boundaries(self) -> None:
+        temporary, root, cache = self._environment()
+        self.addCleanup(temporary.cleanup)
+        attempt = WorkspaceManager(root, cache).create_attempt(session(str(uuid4())))
+        coaching = (attempt / "COACHING.md").read_text(encoding="utf-8").lower()
+        instructions = (attempt / "AGENTS.md").read_text(encoding="utf-8").lower()
+
+        for required in (
+            "candidate-owned, non-executable",
+            "candidate-approved",
+            "source",
+            "history",
+            "hidden-test claims",
+            "simulation.py",
+            "post-attempt",
+        ):
+            self.assertIn(required, coaching)
+        for required in (
+            "status.md",
+            "context --workspace-root path",
+            "coaching.md",
+            "explicit permission",
+            "source history",
+            "reference, solution, stages, walkthrough",
+            "study, vendor, fixture cache, copied tests",
+            "hidden-test material",
+            "simulation.py",
+            "session.json",
+            "events.jsonl",
+            "locks",
+            "active.json",
+            "browser ui and cli",
+            "timer, scoring",
+            "operational policy, not a security sandbox",
+        ):
+            self.assertIn(required, instructions)
+        self.assertNotIn("read or edit candidate code only", instructions)
+
     def test_corrupt_pointer_and_explicit_selection_precedence(self) -> None:
         temporary, root, cache = self._environment()
         self.addCleanup(temporary.cleanup)

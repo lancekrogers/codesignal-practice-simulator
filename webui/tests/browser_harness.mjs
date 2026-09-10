@@ -5,10 +5,24 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { expect } from "@playwright/test";
 import { writeClock } from "./clock_file.mjs";
+import { createContinuityControls } from "./continuity_controls.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
 export async function startFixtureServer(options = {}) {
+  const fixture = await prepareFixture(options);
+  const runtime = { child: undefined, details: undefined, port: 0 };
+  try {
+    await launchFixture(runtime, fixture);
+    return createFixtureHandle(fixture, runtime);
+  } catch (error) {
+    if (runtime.child) await stopChild(runtime.child);
+    await rm(fixture.workspace, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function prepareFixture(options) {
   const installed = Boolean(process.env.SIMULATOR_SERVER_SCRIPT);
   const script = installed
     ? resolve(projectRoot, process.env.SIMULATOR_SERVER_SCRIPT)
@@ -17,72 +31,68 @@ export async function startFixtureServer(options = {}) {
   const clockFile = join(workspace, "test-clock.txt");
   const scoreCallsFile = join(workspace, "score-calls.txt");
   if (options.clockStart) await writeFile(clockFile, options.clockStart, "utf8");
-  let child;
-  let details;
-  let port = 0;
-  const launch = async () => {
-    child = spawn(
-      process.env.SIMULATOR_PYTHON || process.env.PYTHON || "python3",
-      [script],
-      {
-        cwd: projectRoot,
-        env: fixtureEnvironment(installed, workspace, port, {
-          clockFile: options.clockStart ? clockFile : undefined,
-          scoreCallsFile,
-        }),
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
-    return readReadyLine(child);
-  };
-  try {
-    details = await launch();
-    if (!details?.origin || !details?.token) {
-      throw new Error("fixture server emitted incomplete startup data");
-    }
-    port = Number(new URL(details.origin).port);
-    let closePromise;
-    return {
-      get origin() {
-        return details.origin;
-      },
-      get token() {
-        return details.token;
-      },
-      async setClock(value) {
-        if (!options.clockStart) throw new Error("fixture clock is not controlled");
-        await writeClock(clockFile, value);
-      },
-      async scoreCalls() {
-        try {
-          return (await readFile(scoreCallsFile, "utf8")).trim().split("\n")
-            .filter(Boolean).length;
-        } catch (error) {
-          if (error.code === "ENOENT") return 0;
-          throw error;
-        }
-      },
-      async attemptEvents(attemptId) {
-        const path = join(workspace, "attempts", attemptId, "events.jsonl");
-        const lines = (await readFile(path, "utf8")).trim().split("\n").filter(Boolean);
-        return lines.map((line) => JSON.parse(line).name);
-      },
-      async restart() {
-        await stopChild(child);
-        details = await launch();
-      },
-      async close() {
-        closePromise ??= stopChild(child).then(() =>
-          rm(workspace, { recursive: true, force: true }),
-        );
-        return closePromise;
-      },
-    };
-  } catch (error) {
-    await stopChild(child);
-    await rm(workspace, { recursive: true, force: true });
-    throw error;
+  return { clockFile, installed, options, script, scoreCallsFile, workspace };
+}
+
+async function launchFixture(runtime, fixture) {
+  runtime.child = spawn(
+    process.env.SIMULATOR_PYTHON || process.env.PYTHON || "python3",
+    [fixture.script],
+    {
+      cwd: projectRoot,
+      env: fixtureEnvironment(fixture.installed, fixture.workspace, runtime.port, {
+        clockFile: fixture.options.clockStart ? fixture.clockFile : undefined,
+        scoreCallsFile: fixture.scoreCallsFile,
+      }),
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+  runtime.details = await readReadyLine(runtime.child);
+  if (!runtime.details?.origin || !runtime.details?.token) {
+    throw new Error("fixture server emitted incomplete startup data");
   }
+  runtime.port = Number(new URL(runtime.details.origin).port);
+}
+
+function createFixtureHandle(fixture, runtime) {
+  let closePromise;
+  return {
+    ...createContinuityControls(projectRoot, fixture.workspace),
+    get origin() {
+      return runtime.details.origin;
+    },
+    get token() {
+      return runtime.details.token;
+    },
+    async setClock(value) {
+      if (!fixture.options.clockStart) throw new Error("fixture clock is not controlled");
+      await writeClock(fixture.clockFile, value);
+    },
+    async scoreCalls() {
+      try {
+        return (await readFile(fixture.scoreCallsFile, "utf8")).trim().split("\n")
+          .filter(Boolean).length;
+      } catch (error) {
+        if (error.code === "ENOENT") return 0;
+        throw error;
+      }
+    },
+    async attemptEvents(attemptId) {
+      const path = join(fixture.workspace, "attempts", attemptId, "events.jsonl");
+      const lines = (await readFile(path, "utf8")).trim().split("\n").filter(Boolean);
+      return lines.map((line) => JSON.parse(line).name);
+    },
+    async restart() {
+      await stopChild(runtime.child);
+      await launchFixture(runtime, fixture);
+    },
+    async close() {
+      closePromise ??= stopChild(runtime.child).then(() =>
+        rm(fixture.workspace, { recursive: true, force: true }),
+      );
+      return closePromise;
+    },
+  };
 }
 
 function fixtureEnvironment(installed, workspace, port, options) {

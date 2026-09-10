@@ -33,21 +33,29 @@ _MARKER_SCHEMA_VERSION = "attempt-creation/v1"
 
 _COACHING = """# Coaching
 
-Candidate-owned, non-executable collaboration notes.
-
-Use this file for candidate-approved goals, questions, and high-level hints.
-Do not put candidate code, test output, or answers here.
+Candidate-owned, non-executable notes for candidate-approved goals, questions,
+and high-level hints. Do not put source, history, test output, answers, or
+hidden-test claims here, and never import or execute these notes in
+`simulation.py`. During timed work, do not copy reference, study, vendor, or
+fixture cache material here. After submission or an explicit end, post-attempt
+learning remains opt-in.
 """
 _AGENTS = """# Live attempt instructions
 
-Read the generated `STATUS.md` before acting.
+Read derived `STATUS.md` first, or run
+`codesignal-sim context --workspace-root PATH`.
+Browser UI and CLI are two views of the same attempt; server timer, scoring,
+and lifecycle state are authoritative.
 
-- Edit `COACHING.md` by default. It is candidate-owned, non-executable text.
-- Read or edit candidate code only after an explicit candidate request.
-- Never manually edit structured or generated state: `session.json`,
-  `events.jsonl`, locks, `active.json`, or `STATUS.md`.
-- During timed work, never use assessment reference/solution/stages/walkthrough/
-  study answers as hints or expose their contents.
+- Use candidate-owned `COACHING.md` for candidate-approved notes by default.
+- Ask explicit permission before reading candidate source or source history;
+  ask separately before editing source.
+- During timed work, never read or use reference, solution, stages, walkthrough,
+  study, vendor, fixture cache, copied tests, or hidden-test material.
+- Never import or execute coaching in `simulation.py`, make hidden-test claims,
+  or manually edit `session.json`, `events.jsonl`, `STATUS.md`, locks, or
+  `active.json`.
+- After submission or an explicit end, post-attempt learning is opt-in.
 
 This is operational policy, not a security sandbox: a same-user process can
 bypass it.

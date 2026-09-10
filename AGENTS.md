@@ -1,21 +1,37 @@
 # Timed-attempt agent policy
 
-For a timed attempt, inspect safe generated context first: run
-`codesignal-sim context --workspace-root PATH` or read that attempt's
-generated `STATUS.md`. These views are non-authoritative; do not manually
-update them.
+For a timed attempt, read only derived context first:
+`codesignal-sim context --workspace-root PATH`, or the attempt's generated
+`STATUS.md`. These views are non-authoritative; never manually update them.
 
-- Edit the candidate-owned, non-executable `COACHING.md` by default.
-- Read or edit candidate code only after explicit candidate permission.
-- Never manually edit structured or generated state: `session.json`,
-  `events.jsonl`, locks, `active.json`, or `STATUS.md`.
-- Never use assessment reference, solution, stages, walkthrough, or study
-  answers during a timed session. An explicit request to edit candidate code
-  does not permit consulting those materials.
+- Use candidate-owned, non-executable `COACHING.md` for candidate-approved
+  goals, questions, and high-level hints. Do not put source, history, test
+  output, answers, or hidden-test claims there.
+- Ask explicit permission before reading candidate source or source history;
+  ask separately before editing source. A source request never permits access
+  to protected assessment material.
+- During timed work, never read or use reference, solution, stages,
+  walkthrough, study, vendor, fixture cache, copied tests, or hidden-test
+  material. Never import or execute coaching in `simulation.py`.
+- Never manually edit `session.json`, `events.jsonl`, `STATUS.md`, locks, or
+  `active.json`.
 
-This is an operational policy, not a sandbox or access-control boundary. A
-process running as the same user can bypass these workflow controls.
+## Live browser/terminal sequence
 
-After submission or an explicit end to timed work, the candidate may opt into
-the post-attempt educational and legacy compatibility material described in
-`docs/agent-safety.md`.
+1. In a fetched workspace, launch the loopback browser with
+   `codesignal-sim web --workspace-root "$workspace"`.
+2. After the browser starts the attempt, inspect
+   `codesignal-sim context --workspace-root "$workspace"` and `STATUS.md`.
+3. Write only candidate-approved notes to `COACHING.md`; ask before source or
+   history access.
+4. Verify browser state through its server response and the CLI
+   `status`, `time`, `context`, `test`, or `submit` commands.
+
+The browser UI and direct CLI are separate transports for one attempt. The
+server-authoritative timer, scoring, and lifecycle own the result; candidate
+source/history belong to the candidate, while `session.json` and events belong
+to the simulator. This is operational policy, not a security sandbox: another
+same-user process can bypass it.
+
+After submission or an explicit end, post-attempt learning is opt-in as
+described in `docs/agent-safety.md`.

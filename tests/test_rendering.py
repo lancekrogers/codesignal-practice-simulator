@@ -187,6 +187,8 @@ class RenderingTests(unittest.TestCase):
                 f"codesignal-sim submit --attempt {self.attempt.name}",
             ],
         )
+        self.assertIn("derived, non-authoritative session context", markdown)
+        self.assertIn("Next legal commands", markdown)
         for forbidden in (
             "candidate source must not render",
             "answer-bearing test output",
@@ -195,6 +197,9 @@ class RenderingTests(unittest.TestCase):
             "level one",
             "candidate_source",
             "simulation.py",
+            "COACHING.md",
+            "source history",
+            "hidden-test",
         ):
             self.assertNotIn(forbidden, markdown)
             self.assertNotIn(forbidden, render_json(context))
@@ -353,15 +358,36 @@ class RenderingTests(unittest.TestCase):
 
         self.assertIn("candidate-owned, non-executable", coaching.lower())
         for required in (
+            "candidate-approved",
+            "source",
+            "history",
+            "hidden-test claims",
+            "simulation.py",
+            "post-attempt",
+        ):
+            self.assertIn(required, coaching.lower())
+        for required in (
             "STATUS.md",
+            "context --workspace-root PATH",
             "COACHING.md",
-            "explicit candidate request",
-            "structured or generated state",
-            "assessment reference/solution/stages/walkthrough/",
+            "candidate-approved",
+            "explicit permission",
+            "source history",
+            "reference, solution, stages, walkthrough",
+            "study, vendor, fixture cache, copied tests",
+            "hidden-test material",
+            "simulation.py",
+            "session.json",
+            "events.jsonl",
+            "locks",
+            "active.json",
+            "Browser UI and CLI",
+            "timer, scoring",
             "operational policy, not a security sandbox",
         ):
             self.assertIn(required, instructions)
-        self.assertNotIn("codesignal-sim context", instructions)
+        self.assertNotIn("read or edit candidate code only", instructions.lower())
+        self.assertIn("codesignal-sim context", instructions)
 
 
 if __name__ == "__main__":

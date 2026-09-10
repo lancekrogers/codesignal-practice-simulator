@@ -216,25 +216,25 @@ class RuntimeApplication:
     def resume(self, *, attempt_id: str | None) -> SessionState:
         with self._action_lock:
             state = self.lifecycle.resume(attempt_id)
-            self.derived_status.refresh(state.attempt_id)
+            self._refresh_derived_status(state.attempt_id)
             return state
 
     def status(self, *, attempt_id: str | None) -> SessionState:
         with self._action_lock:
             state = self.lifecycle.status(attempt_id)
-            self.derived_status.refresh(state.attempt_id)
+            self._refresh_derived_status(state.attempt_id)
             return state
 
     def time(self, *, attempt_id: str | None) -> TimeObservation:
         with self._action_lock:
             observation = self.lifecycle.time(attempt_id)
-            self.derived_status.refresh(observation.state.attempt_id)
+            self._refresh_derived_status(observation.state.attempt_id)
             return observation
 
     def task(self, *, attempt_id: str | None, level: int) -> PromptResult:
         with self._action_lock:
             result = self.prompts.read_prompt(attempt_id=attempt_id, level=level)
-            self.derived_status.refresh(result.attempt_id)
+            self._refresh_derived_status(result.attempt_id)
             return result
 
     def source(self, *, attempt_id: str | None) -> CandidateDocument:
@@ -329,8 +329,15 @@ class RuntimeApplication:
         if_match: str | None,
     ) -> SessionState:
         self._save_before_evaluation(attempt_id, source_content, if_match)
-        state = self.evaluation.test(attempt_id)
-        self.derived_status.refresh(state.attempt_id)
+        try:
+            state = self.evaluation.test(attempt_id)
+        except CandidateFailureError:
+            # Scoring has already persisted its authoritative transition when
+            # EvaluationService reports candidate failure.
+            state = self.lifecycle.status(attempt_id)
+            self._refresh_derived_status(state.attempt_id)
+            raise
+        self._refresh_derived_status(state.attempt_id)
         return state
 
     def _start_locked(
@@ -358,7 +365,7 @@ class RuntimeApplication:
             mode=mode,  # type: ignore[arg-type]
             drill_duration_seconds=drill_duration_seconds,
         )
-        self.derived_status.refresh(state.attempt_id)
+        self._refresh_derived_status(state.attempt_id)
         return state
 
     def _submit_locked(
@@ -370,8 +377,18 @@ class RuntimeApplication:
         self._save_before_evaluation(attempt_id, source_content, if_match)
         result = self.evaluation.submit(attempt_id)
         if result.newly_submitted:
-            self.derived_status.refresh(result.state.attempt_id)
+            self._refresh_derived_status(result.state.attempt_id)
         return result
+
+    def _refresh_derived_status(self, attempt_id: str) -> None:
+        """Refresh derived context without changing an operation's outcome."""
+        try:
+            self.derived_status.refresh(attempt_id)
+        except Exception:
+            # The built-in renderer swallows its own filesystem/state failures.
+            # Keep this outer guard for injected replacement services so their
+            # failure cannot change an authoritative CLI or web result.
+            pass
 
     def _evaluation_snapshot_locked(
         self,
@@ -381,6 +398,7 @@ class RuntimeApplication:
         newly_submitted: bool = False,
     ) -> EvaluationSnapshot:
         observation = self.lifecycle.time(state.attempt_id)
+        self._refresh_derived_status(observation.state.attempt_id)
         source = self.candidate_documents.read(state.attempt_id)
         return EvaluationSnapshot(
             state=observation.state,
