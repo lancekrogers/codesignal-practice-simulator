@@ -152,6 +152,56 @@ test("returns timestamped and hashed candidate history through the public envelo
   expect(history.document.data.current.etag).toBe(hashFor(secondContent));
 });
 
+test("restores the oldest repeated-content predecessor through history UI", async ({
+  page,
+}) => {
+  const entry = new EntryPage(page);
+  const editorPage = new EditorPage(page);
+  const started = await startAttempt(page, entry);
+  const { attempt_id: attemptId } = started.data.session;
+  const initialContent = started.data.source.content;
+  const firstContent = `${initialContent}\n# repeated first`;
+  const secondContent = `${firstContent}\n# repeated second`;
+  const sequence = [firstContent, secondContent, firstContent, firstContent];
+  let etag = started.data.source.etag;
+
+  for (const content of sequence) {
+    const saved = await saveSource(page, attemptId, harness.token, content, etag);
+    expect(saved.status).toBe(200);
+    etag = saved.document.data.source.etag;
+  }
+
+  await page.reload();
+  await entry.expectReconnectAction();
+  await page.getByRole("button", { name: "Reconnect to active session" }).click();
+  await editorPage.expectReady();
+  await page.getByRole("tab", { name: "History" }).click();
+  const historyItems = page.locator(".history-item");
+  await expect(historyItems).toHaveCount(3);
+  await expect(historyItems.nth(2).locator("pre")).toContainText(initialContent);
+
+  const restoreResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/source/restore" &&
+    response.request().method() === "POST",
+  );
+  await historyItems.nth(2)
+    .getByRole("button", { name: "Restore this version" })
+    .click();
+  await page.getByRole("dialog")
+    .getByRole("button", { name: "Restore version" })
+    .click();
+  expect((await restoreResponse).status()).toBe(200);
+
+  await expect.poll(async () =>
+    (await readSource(page, attemptId, harness.token)).document.data.content
+  ).toBe(initialContent);
+  const persisted = await readHistory(page, attemptId, harness.token);
+  expect(persisted.document.data.current).toMatchObject({
+    content: initialContent,
+    etag: hashFor(initialContent),
+  });
+});
+
 test("recovers the active source and server deadline after refresh", async ({ page }) => {
   const entry = new EntryPage(page);
   const assessment = new AssessmentPage(page);
@@ -256,6 +306,21 @@ async function readSource(page, attemptId, token) {
     });
     return { status: response.status, document: await response.json() };
   }, { id: attemptId, capability: token });
+}
+
+async function saveSource(page, attemptId, token, content, etag) {
+  return page.evaluate(async ({ id, capability, source, expected }) => {
+    const response = await fetch(`/api/source?attempt_id=${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "If-Match": expected,
+        "X-Simulator-Token": capability,
+      },
+      body: JSON.stringify({ content: source }),
+    });
+    return { status: response.status, document: await response.json() };
+  }, { id: attemptId, capability: token, source: content, expected: etag });
 }
 
 async function readHistory(page, attemptId, token) {

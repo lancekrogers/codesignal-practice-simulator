@@ -43,6 +43,7 @@ from codesignal_practice_simulator.scoring import (
     RUNNER_FILENAME,
     IsolatedAttemptScorer,
     _POSIX_PS,
+    _PROCESS_POLL_SECONDS,
     _collect_bounded_output,
 )
 from codesignal_practice_simulator.workspace import (
@@ -130,6 +131,55 @@ def _bounded_test_process_cleanup(
 class FakeClock:
     def now(self) -> datetime:
         return START
+
+
+class _SteppingClock:
+    def __init__(self, step: float) -> None:
+        self.value = 0.0
+        self.step = step
+
+    def monotonic(self) -> float:
+        value = self.value
+        self.value += self.step
+        return value
+
+
+class _FakeStream:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def fileno(self) -> int:
+        return 123
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _RunningProcess:
+    def __init__(self) -> None:
+        self.stdout = _FakeStream()
+        self.pid = 456
+
+    def poll(self) -> None:
+        return None
+
+
+class _RecordingSelector:
+    def __init__(self) -> None:
+        self.waits: list[float] = []
+
+    def register(self, _stream: object, _events: int) -> None:
+        pass
+
+    def unregister(self, _stream: object) -> None:
+        pass
+
+    def select(self, timeout: float) -> list[object]:
+        self.waits.append(timeout)
+        return []
+
+    def close(self) -> None:
+        pass
 
 
 def make_cache(root: Path) -> ValidatedFixtureCache:
@@ -324,6 +374,119 @@ def evaluate(group):
             len(run.detail.encode("utf-8")),
             MAX_OUTPUT_BYTES + len("\n[output truncated]"),
         )
+
+    def test_continuously_readable_output_rechecks_deadline_after_each_read(self) -> None:
+        process = _RunningProcess()
+        selector = _RecordingSelector()
+        clock = _SteppingClock(0.01)
+        reads = 0
+
+        def always_readable(_descriptor: int, _size: int) -> bytes:
+            nonlocal reads
+            reads += 1
+            if reads > 6:
+                self.fail("continuous output was drained without a deadline recheck")
+            return b"x" * 4096
+
+        with (
+            patch(
+                "codesignal_practice_simulator.scoring.selectors.DefaultSelector",
+                return_value=selector,
+            ),
+            patch("codesignal_practice_simulator.scoring.os.set_blocking"),
+            patch(
+                "codesignal_practice_simulator.scoring.os.read",
+                side_effect=always_readable,
+            ),
+            patch(
+                "codesignal_practice_simulator.scoring.time.monotonic",
+                side_effect=clock.monotonic,
+            ),
+            patch(
+                "codesignal_practice_simulator.scoring._snapshot_descendant_pids",
+                return_value=(),
+            ),
+            patch("codesignal_practice_simulator.scoring._stop_process_tree"),
+            patch("codesignal_practice_simulator.scoring._poll_cleanup"),
+        ):
+            output, timed_out = _collect_bounded_output(process, 0.03)  # type: ignore[arg-type]
+
+        self.assertTrue(timed_out)
+        self.assertLessEqual(reads, 4)
+        self.assertIn("[output truncated]", output)
+        self.assertTrue(
+            all(wait <= _PROCESS_POLL_SECONDS for wait in selector.waits)
+        )
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX process containment")
+    def test_continuous_writer_times_out_is_reaped_and_later_groups_run(self) -> None:
+        pid_file = self.attempt / "continuous-writer.pid"
+        self.write_candidate(
+            f"""
+import os
+import time
+from pathlib import Path
+
+
+def evaluate(group):
+    if group != 1:
+        return "ok"
+    Path({str(pid_file)!r}).write_text(str(os.getpid()), encoding="utf-8")
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        os.write(1, b"RUNTIME_OUTPUT_PATH /tmp/private/continuous\\n" * 64)
+    return "ok"
+"""
+        )
+        scorer = IsolatedAttemptScorer(FILE_STORAGE, timeout_seconds=0.1)
+        started = time.monotonic()
+
+        score = scorer.score(self.attempt)
+        elapsed = time.monotonic() - started
+        writer_pid = _read_recorded_pid(pid_file, 0.2)
+
+        self.assertEqual(
+            [result.outcome for result in score.levels],
+            ["error", "passed", "passed", "passed"],
+        )
+        self.assertEqual(scorer.last_runs[0].detail, "timeout")
+        self.assertLess(elapsed, 1.5)
+        self.assertIsNotNone(writer_pid)
+        assert writer_pid is not None
+        self.assertTrue(_pid_has_exited(writer_pid, 0.5))
+
+    @unittest.skipUnless(
+        os.name == "posix" and hasattr(os, "fork"),
+        "requires POSIX fork",
+    )
+    def test_exited_parent_does_not_wait_for_descendant_held_output_pipe(self) -> None:
+        source = """
+import os
+import time
+
+
+if os.fork() == 0:
+    time.sleep(2)
+    os._exit(0)
+os._exit(0)
+"""
+        process = subprocess.Popen(
+            (sys.executable, "-c", source),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        started = time.monotonic()
+        try:
+            _output, timed_out = _collect_bounded_output(process, 1.0)
+            elapsed = time.monotonic() - started
+
+            self.assertFalse(timed_out)
+            self.assertEqual(process.returncode, 0)
+            self.assertLess(elapsed, 0.4)
+        finally:
+            _bounded_test_process_cleanup(process, None)
 
     @unittest.skipUnless(
         _POSIX_CONTAINMENT_AVAILABLE, "requires POSIX process containment"

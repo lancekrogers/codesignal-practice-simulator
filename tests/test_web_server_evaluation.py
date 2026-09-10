@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 try:
     from .web_server_test_support import WebServerTestCase
@@ -55,9 +56,46 @@ class TestWebServerEvaluation(WebServerTestCase):
         )
         self._assert_no_scoring_details(document)
 
-    def _start_isolated_attempt(self) -> tuple[str, str]:
+    def test_continuous_output_timeout_is_safe_and_does_not_block_time(self) -> None:
+        attempt_id, etag = self._start_isolated_attempt(timeout_seconds=0.1)
+        started = time.monotonic()
+        status, _headers, document = self.request(
+            "POST",
+            f"/api/test?attempt_id={attempt_id}",
+            body={"content": _continuous_output_candidate_source()},
+            origin=self.origin,
+            headers={"If-Match": etag},
+        )
+        evaluation_elapsed = time.monotonic() - started
+
+        self.assertEqual(status, 200)
+        practice = document["data"]["practice"]
+        self.assertEqual(
+            [level["outcome"] for level in practice["levels"]],
+            ["error", "passed", "passed", "passed"],
+        )
+        self.assertEqual(
+            practice["levels"][0]["candidate_error"],
+            "The local practice check could not be completed.",
+        )
+        self.assertLess(evaluation_elapsed, 1.5)
+        self._assert_no_scoring_details(document)
+
+        started = time.monotonic()
+        time_status, _headers, _time_document = self.request(
+            "GET",
+            f"/api/time?attempt_id={attempt_id}",
+        )
+        self.assertEqual(time_status, 200)
+        self.assertLess(time.monotonic() - started, 0.5)
+
+    def _start_isolated_attempt(
+        self, *, timeout_seconds: float = 10.0
+    ) -> tuple[str, str]:
         self.application.scorer_factory = (
-            lambda definition: IsolatedAttemptScorer(definition).score
+            lambda definition: IsolatedAttemptScorer(
+                definition, timeout_seconds=timeout_seconds
+            ).score
         )
         attempt_id, etag = self.start_attempt()
         attempt = self.workspace / "attempts" / attempt_id
@@ -172,5 +210,24 @@ def evaluate(group):
     return """\
 def evaluate(group):
     return "wrong" if group == 2 else "ok"
+"""
+
+
+def _continuous_output_candidate_source() -> str:
+    return """\
+import os
+import time
+
+
+def evaluate(group):
+    if group != 1:
+        return "ok"
+    deadline = time.monotonic() + 2
+    marker = (
+        "SCORER_" + "INTERNAL_SENTINEL " + "/" + "tmp" + "/" + "private/runtime-output\\n"
+    ).encode()
+    while time.monotonic() < deadline:
+        os.write(1, marker * 64)
+    return "ok"
 """
 

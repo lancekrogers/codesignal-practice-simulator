@@ -65,6 +65,13 @@ class CandidateFailureFilesystem(LocalFilesystem):
 
     def replace(self, source: Path, destination: Path) -> None:
         if (
+            self.boundary == "source_replace_cleanup"
+            and destination.name == "simulation.py"
+            and not self.failed
+        ):
+            self.failed = True
+            raise OSError("injected source replacement failure")
+        if (
             self.boundary == "source_replace"
             and destination.name == "simulation.py"
             and not self.failed
@@ -73,6 +80,16 @@ class CandidateFailureFilesystem(LocalFilesystem):
             self.failed = True
             raise OSError("injected source replacement failure")
         super().replace(source, destination)
+
+    def unlink(self, path: Path) -> None:
+        if (
+            self.boundary == "source_replace_cleanup"
+            and self.failed
+            and path.parent.name == HISTORY_DIRECTORY
+            and path.suffix == ".json"
+        ):
+            raise OSError("injected snapshot cleanup failure")
+        super().unlink(path)
 
     def flush_directory(self, path: Path) -> None:
         if (

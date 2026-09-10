@@ -319,22 +319,22 @@ def _collect_bounded_output(
     output = bytearray()
     truncated = False
 
-    def drain() -> bool:
+    def read_once() -> tuple[bool, bool]:
         nonlocal truncated
-        while True:
-            try:
-                block = os.read(descriptor, 4096)
-            except BlockingIOError:
-                return True
-            except OSError:
-                return False
-            if not block:
-                return False
-            remaining = MAX_OUTPUT_BYTES - len(output)
-            if remaining > 0:
-                output.extend(block[:remaining])
-            if len(block) > remaining:
-                truncated = True
+        try:
+            block = os.read(descriptor, 4096)
+        except BlockingIOError:
+            return True, False
+        except OSError:
+            return False, False
+        if not block:
+            return False, False
+        remaining = MAX_OUTPUT_BYTES - len(output)
+        if remaining > 0:
+            output.extend(block[:remaining])
+        if len(block) > remaining:
+            truncated = True
+        return True, True
 
     timed_out = False
     selector = selectors.DefaultSelector()
@@ -342,12 +342,23 @@ def _collect_bounded_output(
         selector.register(stream, selectors.EVENT_READ)
         deadline = time.monotonic() + timeout_seconds
         stream_open = True
-        while process.poll() is None:
+        while True:
+            running = process.poll() is None
+            read_output = False
             if stream_open:
-                stream_open = drain()
+                stream_open, read_output = read_once()
                 if not stream_open:
                     selector.unregister(stream)
             remaining = deadline - time.monotonic()
+            if not running:
+                if (
+                    not stream_open
+                    or not read_output
+                    or truncated
+                    or remaining <= 0
+                ):
+                    break
+                continue
             if remaining <= 0:
                 timed_out = True
                 descendants = _snapshot_descendant_pids(process.pid)
@@ -359,15 +370,12 @@ def _collect_bounded_output(
                 _poll_cleanup(process, descendants)
                 break
             if stream_open:
-                selector.select(remaining)
+                selector.select(min(remaining, _PROCESS_POLL_SECONDS))
             else:
                 try:
                     process.wait(timeout=min(remaining, _PROCESS_POLL_SECONDS))
                 except subprocess.TimeoutExpired:
                     pass
-        else:
-            if stream_open:
-                drain()
     finally:
         selector.close()
         if not stream.closed:

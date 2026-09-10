@@ -281,19 +281,17 @@ class CandidateDocumentService:
             key=lambda item: item.operation_order,
             reverse=True,
         )
-        by_new_hash: dict[str, SourceSnapshot] = {}
-        for snapshot in ordered:
-            by_new_hash.setdefault(snapshot.new_hash, snapshot)
         snapshots: list[SourceSnapshot] = []
         next_hash = current.etag
-        seen_prior: set[str] = set()
-        while next_hash in by_new_hash and len(snapshots) < HISTORY_LIMIT:
-            snapshot = by_new_hash[next_hash]
-            if snapshot.prior_hash in seen_prior:
-                break
-            snapshots.append(snapshot)
-            seen_prior.add(snapshot.prior_hash)
+        for snapshot in ordered:
+            if snapshot.new_hash != next_hash:
+                continue
             next_hash = snapshot.prior_hash
+            if snapshot.prior_hash == snapshot.new_hash:
+                continue
+            snapshots.append(snapshot)
+            if len(snapshots) == HISTORY_LIMIT:
+                break
         return tuple(snapshots)
 
     def _reserve_operation_order_locked(

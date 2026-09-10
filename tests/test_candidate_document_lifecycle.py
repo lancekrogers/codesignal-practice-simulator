@@ -152,7 +152,43 @@ class CandidateDocumentLifecycleTests(CandidateDocumentTestCase):
         self.assertTrue((self.attempt / INITIAL_SOURCE_FILENAME).is_file())
         self.assertEqual(self.service.read(self.state.attempt_id), current)
 
-    def test_history_is_deduplicated_bounded_and_pruning_failure_keeps_new_source(self) -> None:
+    def test_repeated_content_and_noop_keep_oldest_predecessor_restorable(self) -> None:
+        baseline = self.service.read(self.state.attempt_id)
+        first = self.service.save(self.state.attempt_id, "first\n", baseline.etag)
+        second = self.service.save(self.state.attempt_id, "second\n", first.etag)
+        repeated = self.service.save(
+            self.state.attempt_id, first.content, second.etag
+        )
+        noop = self.service.save(
+            self.state.attempt_id, repeated.content, repeated.etag
+        )
+
+        history = self.service.list_history(self.state.attempt_id)
+
+        self.assertEqual(
+            [snapshot.content for snapshot in history.snapshots],
+            [second.content, first.content, baseline.content],
+        )
+        self.assertEqual(
+            [snapshot.operation_order for snapshot in history.snapshots],
+            [3, 2, 1],
+        )
+        self.assertEqual(
+            history.snapshots[0].new_hash,
+            history.snapshots[2].new_hash,
+        )
+        self.assertNotIn(
+            4,
+            {snapshot.operation_order for snapshot in history.snapshots},
+        )
+        restored = self.service.restore(
+            self.state.attempt_id,
+            history.snapshots[-1].snapshot_id,
+            noop.etag,
+        )
+        self.assertEqual(restored, baseline)
+
+    def test_history_is_bounded_and_pruning_failure_keeps_new_source(self) -> None:
         current = self.service.read(self.state.attempt_id)
         for index in range(HISTORY_LIMIT + 5):
             current = self.service.save(
@@ -160,10 +196,6 @@ class CandidateDocumentLifecycleTests(CandidateDocumentTestCase):
             )
         history = self.service.list_history(self.state.attempt_id)
         self.assertLessEqual(len(history.snapshots), HISTORY_LIMIT)
-        self.assertEqual(
-            len({item.prior_hash for item in history.snapshots}),
-            len(history.snapshots),
-        )
 
         failing_manager = WorkspaceManager(
             self.workspace_root,
@@ -176,6 +208,49 @@ class CandidateDocumentLifecycleTests(CandidateDocumentTestCase):
             self.state.attempt_id, "after-prune-fault\n", latest.etag
         )
         self.assertEqual(failing_service.read(self.state.attempt_id), saved)
+
+    def test_unpublished_orphan_is_omitted_then_pruned_after_retry(self) -> None:
+        current = self.service.read(self.state.attempt_id)
+        failing_manager = WorkspaceManager(
+            self.workspace_root,
+            self.cache,
+            filesystem=CandidateFailureFilesystem("source_replace_cleanup"),
+        )
+        failing = CandidateDocumentService(failing_manager, self.clock)
+
+        with self.assertRaises(CandidateDocumentUnavailableError):
+            failing.save(self.state.attempt_id, "retried\n", current.etag)
+
+        self.assertEqual(self.service.read(self.state.attempt_id), current)
+        self.assertEqual(
+            self.service.list_history(self.state.attempt_id).snapshots,
+            (),
+        )
+        orphan_paths = tuple((self.attempt / HISTORY_DIRECTORY).glob("*.json"))
+        self.assertEqual(len(orphan_paths), 1)
+
+        saved = self.service.save(
+            self.state.attempt_id, "retried\n", current.etag
+        )
+        history = self.service.list_history(self.state.attempt_id)
+
+        self.assertEqual(history.current, saved)
+        self.assertEqual(
+            [snapshot.content for snapshot in history.snapshots],
+            [current.content],
+        )
+        self.assertEqual(
+            [snapshot.operation_order for snapshot in history.snapshots],
+            [2],
+        )
+        self.assertEqual(
+            tuple((self.attempt / HISTORY_DIRECTORY).glob("*.json")),
+            (
+                self.attempt
+                / HISTORY_DIRECTORY
+                / f"{history.snapshots[0].snapshot_id}.json",
+            ),
+        )
 
     def test_failure_before_snapshot_and_after_snapshot_preserves_safe_recovery(self) -> None:
         current = self.service.read(self.state.attempt_id)
@@ -208,16 +283,19 @@ class CandidateDocumentLifecycleTests(CandidateDocumentTestCase):
         )
         self.assertTrue(tuple((self.attempt / HISTORY_DIRECTORY).glob("*.json")))
 
-    def test_frozen_clock_orders_and_prunes_exact_newest_snapshots(self) -> None:
+    def test_frozen_clock_retains_50_changes_across_pruned_noop_order_gaps(self) -> None:
         current = self.service.read(self.state.attempt_id)
         for index in range(HISTORY_LIMIT + 5):
             current = self.service.save(
                 self.state.attempt_id, f"revision-{index}\n", current.etag
             )
+            current = self.service.save(
+                self.state.attempt_id, current.content, current.etag
+            )
         history = self.service.list_history(self.state.attempt_id)
         self.assertEqual(
             [snapshot.operation_order for snapshot in history.snapshots],
-            list(range(HISTORY_LIMIT + 5, 5, -1)),
+            list(range((HISTORY_LIMIT + 5) * 2 - 1, 9, -2)),
         )
         self.assertEqual(
             [snapshot.content for snapshot in history.snapshots],
@@ -226,4 +304,4 @@ class CandidateDocumentLifecycleTests(CandidateDocumentTestCase):
         sequence = json.loads(
             (self.attempt / HISTORY_ORDER_FILENAME).read_text(encoding="utf-8")
         )
-        self.assertEqual(sequence["next_order"], HISTORY_LIMIT + 6)
+        self.assertEqual(sequence["next_order"], (HISTORY_LIMIT + 5) * 2 + 1)
