@@ -21,12 +21,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from check_assets import check_static_root  # noqa: E402
-from packaging_support import discover_packaging_interpreter  # noqa: E402
+from packaging_support import (  # noqa: E402
+    discover_packaging_interpreter,
+    packaging_prerequisite_error,
+)
 
 
 PROJECT = Path(__file__).resolve().parents[1]
+PACKAGE_NAME = "codesignal_practice_simulator"
 STATIC = PROJECT / "src" / "codesignal_practice_simulator" / "web" / "static"
-STATIC_PREFIX = "codesignal_practice_simulator/web/static/"
+STATIC_PREFIX = f"{PACKAGE_NAME}/web/static/"
+DECLARED_RUNTIME_RESOURCES = frozenset({"resources/fixture-manifest.json"})
 FORBIDDEN_ARCHIVE_PARTS = frozenset(
     {
         ".cache",
@@ -85,6 +90,11 @@ def inspect_archives(
     with zipfile.ZipFile(wheel) as archive:
         wheel_members = archive.namelist()
         _assert_archive_paths(wheel_members)
+        _assert_runtime_package_resources(
+            [member.filename for member in archive.infolist() if not member.is_dir()],
+            prefix=f"{PACKAGE_NAME}/",
+            static_prefix=STATIC_PREFIX,
+        )
         wheel_static = _static_members(wheel_members, STATIC_PREFIX)
         if wheel_static != expected:
             raise RuntimeError("wheel static members do not match manifest")
@@ -96,6 +106,11 @@ def inspect_archives(
         source_members = archive.getnames()
         _assert_archive_paths(source_members)
         source_prefix = "/src/" + STATIC_PREFIX
+        _assert_runtime_package_resources(
+            [member.name for member in archive.getmembers() if member.isfile()],
+            prefix="/src/" + f"{PACKAGE_NAME}/",
+            static_prefix=source_prefix,
+        )
         source_static = _static_members(source_members, source_prefix)
         if source_static != expected:
             raise RuntimeError("sdist static members do not match manifest")
@@ -131,6 +146,28 @@ def _static_members(members: list[str], prefix: str) -> set[str]:
         for member in members
         if prefix in member and not member.endswith("/")
     }
+
+
+def _assert_runtime_package_resources(
+    members: list[str],
+    *,
+    prefix: str,
+    static_prefix: str,
+) -> None:
+    for member in members:
+        if prefix not in member:
+            continue
+        relative = member.split(prefix, 1)[1]
+        if (
+            relative.endswith(".py")
+            or static_prefix in member
+            or relative in DECLARED_RUNTIME_RESOURCES
+        ):
+            continue
+        raise RuntimeError(
+            "archive contains unexpected non-static package resource member: "
+            f"{relative}"
+        )
 
 
 def _assert_package_data_rules(expected_hashes: dict[str, str]) -> None:
@@ -312,7 +349,7 @@ def _readline(process: subprocess.Popen[str]) -> str:
 def main() -> int:
     python = discover_packaging_interpreter(require_build=True)
     if python is None:
-        print("a Python interpreter with build and setuptools is required", file=sys.stderr)
+        print(packaging_prerequisite_error(require_build=True), file=sys.stderr)
         return 2
     npm = shutil.which("npm")
     if npm is None:

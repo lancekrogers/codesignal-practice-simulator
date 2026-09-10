@@ -10,7 +10,12 @@ sandbox.
 Use this sequence:
 
 1. Launch the loopback browser from a fetched workspace:
-   `codesignal-sim web --workspace-root "$workspace"`.
+   `codesignal-sim web --workspace-root "$workspace" --port 0 --no-open`.
+   Open the newly printed complete loopback URL locally; its `#...` fragment
+   is a private per-launch capability, not text to retain or share. The
+   browser removes it from the URL and sends it only to the same loopback
+   origin in an `X-Simulator-Token` header; it can appear in request
+   diagnostics.
 2. After the browser starts an attempt, inspect
    `codesignal-sim context --workspace-root "$workspace"` or the selected
    attempt's generated `STATUS.md`. For automation, use
@@ -27,11 +32,21 @@ Candidate source and source history belong to the candidate; `COACHING.md` is
 candidate-owned non-executable text; `session.json` and `events.jsonl` are
 simulator-owned authoritative state; `STATUS.md` is a generated view.
 
+The browser start confirmation begins the timer immediately; it has no pause,
+extension, or reset control. Once expired or submitted, the browser is
+read-only. In particular, **Submit** is disabled for an expired browser
+attempt. If the candidate chooses to finalize that expired attempt, the CLI
+`submit --workspace-root "$workspace"` command is the explicit path; it stores
+one result, and later browser refreshes or reconnects show that stored final
+state.
+
 During timed work, never read or use reference, solution, stages, walkthrough,
 study, vendor, fixture cache, copied tests, or hidden-test material. Never
 import or execute coaching in `simulation.py`, make hidden-test claims, or
 manually edit `session.json`, `events.jsonl`, `STATUS.md`, locks, or
 `active.json`. Coaching permission does not authorize protected material.
+The local simulator is not an official evaluator, and no local result makes a
+claim of equivalence to official hidden tests.
 
 ## Post-attempt education
 

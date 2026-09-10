@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import {
   redactSensitiveText,
@@ -7,6 +8,8 @@ import {
 
 export const RESPONSE_SCAN_BYTES = 64 * 1024;
 const MAX_RESPONSE_SCANS = 100;
+const INTERCEPTED_COVERAGE_HEADER =
+  "x-browser-harness-intercepted-coverage";
 const FORBIDDEN_SENTINELS = [
   "BROWSER_HARNESS_FORBIDDEN_RESPONSE_SENTINEL",
   "BROWSER_HARNESS_SECRET_RESPONSE_SENTINEL",
@@ -64,9 +67,9 @@ function createPolicyState(page, harness, testInfo) {
     responseScanSkips: [],
     responseScanViolations: [],
     responseScanDiagnostics: [],
+    interceptedResponseCoverage: new Map(),
     scanCount: 0,
     navigationEpoch: 0,
-    nextNetworkRequestSequence: 0,
     retiredRequestIds: new Set(),
     cdpSession: undefined,
     streamingSetupError: undefined,
@@ -102,7 +105,7 @@ function createPolicyControls(state, harness) {
       state.patchApplication = true;
     },
     intercept(path, response) {
-      state.interceptions.set(path, response);
+      state.interceptions.set(path, normalizeInterceptedResponse(response));
     },
     clearIntercept(path) {
       state.interceptions.delete(path);
@@ -274,7 +277,6 @@ function trackNetworkRequest(event, state) {
   }
   const request = {
     requestId: event.requestId,
-    sequence: ++state.nextNetworkRequestSequence,
     method: event.request.method,
     resourceType: event.type,
     url: event.request.url,
@@ -551,8 +553,9 @@ function trackConsoleError(message, state) {
 }
 
 function queueNetworkResponseScan(event, state) {
-  if (state.scanCount >= MAX_RESPONSE_SCANS) return;
   const request = state.networkRequests.get(event.requestId);
+  if (consumeInterceptedResponseCoverage(event, request, state)) return;
+  if (state.scanCount >= MAX_RESPONSE_SCANS) return;
   const response = networkResponseDescriptor(event, request);
   if (request && request.url !== event.response.url) {
     state.responseScanSkips.push({
@@ -762,6 +765,7 @@ function createScanAccumulator(details, declaredLength) {
     dataUnavailable: false,
     preStreamDataSeen: false,
     streamEstablished: false,
+    scanMechanism: "network-stream",
     completion,
     resolveCompletion,
   };
@@ -909,6 +913,7 @@ function scanDiagnostic(scan) {
     capturedBytes: scan.capturedBytes,
     maxRetainedBytes: scan.maxRetainedBytes,
     streamEstablished: scan.streamEstablished,
+    scanMechanism: scan.scanMechanism,
   };
 }
 
@@ -965,8 +970,9 @@ async function scanResponseForTestTransport(
       recordStreamingViolation(state, scan, "streaming-unavailable");
       return;
     }
-    scan.streamEstablished = true;
     const chunks = await streamFactory();
+    scan.streamEstablished = true;
+    scan.scanMechanism = "test-stream";
     for await (const chunk of chunks) consumeResponseChunk(scan, chunk);
     finalizeResponseScan(scan, state, true);
   } catch (error) {
@@ -1208,7 +1214,12 @@ async function routeRequest(route, state) {
     await hold.release;
   }
   if (interception) {
-    await route.fulfill(interception);
+    scanInterceptedResponse(route.request(), interception, state);
+    await route.fulfill(attachInterceptedResponseCoverage(
+      route.request(),
+      interception,
+      state,
+    ));
     return;
   }
   if (state.patchApplication && /\/app(?:-[^/]+)?\.js$/.test(url.pathname)) {
@@ -1216,6 +1227,123 @@ async function routeRequest(route, state) {
     return;
   }
   await route.continue();
+}
+
+function scanInterceptedResponse(routeRequest, interception, state) {
+  const response = {
+    headers: () => interception.headers,
+    request: () => routeRequest,
+    status: () => interception.status,
+    url: () => routeRequest.url(),
+  };
+  if (state.scanCount >= MAX_RESPONSE_SCANS) {
+    state.responseScanViolations.push({
+      ...responseScanDetails(response, state),
+      reason: "scan-budget-exhausted",
+    });
+    return;
+  }
+  const eligibility = responseScanEligibility(response, state);
+  if (!eligibility.eligible) {
+    if (eligibility.record) state.responseScanSkips.push(eligibility.record);
+    return;
+  }
+  state.scanCount += 1;
+  const scan = createScanAccumulator(
+    responseScanDetails(response, state),
+    eligibility.declaredLength,
+  );
+  scan.syntheticResponse = true;
+  scan.scanMechanism = "intercepted-body";
+  consumeResponseChunk(scan, interception.body);
+  finalizeResponseScan(scan, state, true);
+  retainScanDiagnostic(scan, state);
+}
+
+function attachInterceptedResponseCoverage(routeRequest, interception, state) {
+  const marker = randomUUID();
+  state.interceptedResponseCoverage.set(marker, {
+    method: routeRequest.method(),
+    resourceType: routeRequest.resourceType().toLowerCase(),
+    status: interception.status,
+    url: routeRequest.url(),
+  });
+  return {
+    ...interception,
+    headers: {
+      ...interception.headers,
+      [INTERCEPTED_COVERAGE_HEADER]: marker,
+    },
+  };
+}
+
+function consumeInterceptedResponseCoverage(event, request, state) {
+  const marker = headerValue(
+    event.response.headers,
+    INTERCEPTED_COVERAGE_HEADER,
+  );
+  if (!marker) return false;
+  const expected = state.interceptedResponseCoverage.get(marker);
+  if (
+    !expected ||
+    event.response.connectionId !== 0 ||
+    !request ||
+    request.method !== expected.method ||
+    request.resourceType?.toLowerCase() !== expected.resourceType ||
+    request.url !== expected.url ||
+    event.response.url !== expected.url ||
+    event.response.status !== expected.status
+  ) {
+    return false;
+  }
+  state.interceptedResponseCoverage.delete(marker);
+  return true;
+}
+
+function headerValue(headers, expectedName) {
+  const entry = Object.entries(headers || {}).find(
+    ([name]) => name.toLowerCase() === expectedName,
+  );
+  return entry === undefined ? undefined : String(entry[1]);
+}
+
+function normalizeInterceptedResponse(options) {
+  if (!options || typeof options !== "object") {
+    throw new TypeError("intercepted response options must be an object");
+  }
+  if (options.path !== undefined || options.response !== undefined) {
+    throw new TypeError(
+      "intercepted response must provide bounded inline body or JSON",
+    );
+  }
+  if (options.body !== undefined && options.json !== undefined) {
+    throw new TypeError("intercepted response cannot specify both body and JSON");
+  }
+  let body = options.body;
+  if (options.json !== undefined) body = JSON.stringify(options.json);
+  if (body !== undefined && typeof body !== "string" && !Buffer.isBuffer(body)) {
+    throw new TypeError("intercepted response body must be bytes or text");
+  }
+  const length = typeof body === "string"
+    ? Buffer.byteLength(body)
+    : body?.length || 0;
+  const headers = {};
+  for (const [name, value] of Object.entries(options.headers || {})) {
+    headers[name.toLowerCase()] = String(value);
+  }
+  if (options.contentType) {
+    headers["content-type"] = String(options.contentType);
+  } else if (options.json) {
+    headers["content-type"] = "application/json";
+  }
+  if (length && headers["content-length"] === undefined) {
+    headers["content-length"] = String(length);
+  }
+  return {
+    status: options.status || 200,
+    headers,
+    body,
+  };
 }
 
 async function routeWebSocket(webSocket, state) {
@@ -1310,7 +1438,7 @@ function assetName(value, expectedOrigin) {
 }
 
 async function assertPolicyState(state) {
-  await Promise.all([...state.scanPromises]);
+  await drainResponseScansForTest(state.scanPromises);
   if (state.streamingSetupError) {
     const details = {
       label: "response scan streaming",
@@ -1331,6 +1459,7 @@ async function assertPolicyState(state) {
       timeout: 5000,
     },
   ).toEqual([]);
+  await drainResponseScansForTest(state.scanPromises);
   assertExpectedOccurrences(
     state.failedRequests.filter((request) =>
       !state.expectedBlockedRequests.some((expectation) =>
@@ -1450,6 +1579,12 @@ async function assertPolicyState(state) {
   for (const [request, details] of state.relevantRequests) {
     if (state.retiredRequests.has(request)) continue;
     expect(new URL(details.url).origin).toBe(state.expectedOrigin);
+  }
+}
+
+export async function drainResponseScansForTest(scanPromises) {
+  while (scanPromises.size > 0) {
+    await Promise.all([...scanPromises]);
   }
 }
 

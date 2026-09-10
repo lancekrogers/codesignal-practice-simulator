@@ -22,6 +22,7 @@ import {
   startFixtureServer,
 } from "./browser_harness.mjs";
 import {
+  drainResponseScansForTest,
   RESPONSE_SCAN_BYTES,
   scanResponseForTest,
 } from "./network_guard.mjs";
@@ -52,6 +53,7 @@ const HARNESS_FAILURE_PROBE_SENTINELS = [
   "SYNTHETIC_REFERENCE_FETCH_ONLY_SENTINEL",
   "FETCH_ONLY",
 ];
+const RESPONSE_SCAN_CAP = 100;
 
 let harness;
 let requestPolicy;
@@ -333,7 +335,9 @@ test("scans only bounded synthetic response prefixes without retaining content",
   }]);
 });
 
-test("arms streaming before fast same-origin responses finish", async ({ page }) => {
+test("scans bounded intercepted bytes before fast responses finish", async ({
+  page,
+}) => {
   const paths = Array.from(
     { length: 8 },
     (_, index) => `/favicon.svg?fast=${index}`,
@@ -351,7 +355,345 @@ test("arms streaming before fast same-origin responses finish", async ({ page })
   await expect.poll(() => requestPolicy.responseScanDiagnostics()
     .filter(({ path }) => path.startsWith("/favicon.svg?fast=")).length
   ).toBe(paths.length);
+  expect(requestPolicy.responseScanDiagnostics()
+    .filter(({ path }) => path.startsWith("/favicon.svg?fast="))
+    .every(({ scanMechanism, streamEstablished }) =>
+      scanMechanism === "intercepted-body" &&
+      !streamEstablished
+    )).toBe(true);
   expect(requestPolicy.responseScanViolations()).toEqual([]);
+});
+
+test("scans each repeated same-URL intercepted response", async ({ page }) => {
+  const path = "/favicon.svg?repeated=1";
+  const sentinel = "BROWSER_HARNESS_FORBIDDEN_RESPONSE_SENTINEL";
+  requestPolicy.expectForbiddenResponse(path, sentinel);
+  await page.goto(`${harness.origin}/#token=${harness.token}`);
+  requestPolicy.intercept(path, {
+    status: 200,
+    contentType: "text/plain",
+    body: "safe first response",
+  });
+  await page.evaluate(
+    (url) => fetch(url).then((response) => response.text()),
+    path,
+  );
+  requestPolicy.intercept(path, {
+    status: 200,
+    contentType: "text/plain",
+    body: `forbidden later response: ${sentinel}`,
+  });
+  await page.evaluate(
+    (url) => fetch(url).then((response) => response.text()),
+    path,
+  );
+
+  await expect.poll(() => requestPolicy.forbiddenResponseMatches()).toEqual([{
+    sentinel,
+    url: `${harness.origin}${path}`,
+  }]);
+  expect(requestPolicy.responseScanDiagnostics()
+    .filter((diagnostic) => diagnostic.path === path)
+  ).toEqual([
+    expect.objectContaining({ scanMechanism: "intercepted-body" }),
+    expect.objectContaining({ scanMechanism: "intercepted-body" }),
+  ]);
+});
+
+test("fails closed past the intercepted response scan cap without retaining the body", async ({
+  page,
+}) => {
+  const path = "/favicon.svg?scan-budget";
+  const exhaustedPath = `${path}=${RESPONSE_SCAN_CAP}`;
+  const unscannedSentinel = "BROWSER_HARNESS_FORBIDDEN_RESPONSE_SENTINEL";
+  requestPolicy.expectResponseScanViolation({
+    method: "GET",
+    path: exhaustedPath,
+    status: 200,
+    reason: "scan-budget-exhausted",
+    count: 1,
+  });
+  requestPolicy.intercept("/favicon.svg", {
+    status: 200,
+    contentType: "text/plain",
+    body: "bounded response",
+  });
+
+  await page.evaluate(async ({ origin, path, count }) => {
+    for (let index = 0; index < count; index += 1) {
+      await fetch(`${origin}${path}=${index}`, { mode: "no-cors" });
+    }
+  }, { origin: harness.origin, path, count: RESPONSE_SCAN_CAP });
+  requestPolicy.intercept("/favicon.svg", {
+    status: 200,
+    contentType: "text/plain",
+    body: unscannedSentinel,
+  });
+  await page.evaluate(
+    (url) => fetch(url, { mode: "no-cors" }),
+    `${harness.origin}${exhaustedPath}`,
+  );
+  await requestPolicy.assert();
+
+  expect(requestPolicy.responseScanDiagnostics()).toHaveLength(
+    RESPONSE_SCAN_CAP,
+  );
+  expect(requestPolicy.responseScanViolations()).toEqual([
+    expect.objectContaining({
+      path: exhaustedPath,
+      reason: "scan-budget-exhausted",
+    }),
+  ]);
+  expect(requestPolicy.forbiddenResponseMatches()).toEqual([]);
+  expect(JSON.stringify({
+    diagnostics: requestPolicy.responseScanDiagnostics(),
+    violations: requestPolicy.responseScanViolations(),
+  })).not.toContain(unscannedSentinel);
+});
+
+test("does not let a settled ordinary same-URL response lend intercepted coverage", async ({
+  page,
+}) => {
+  const path = "/api/bootstrap?mixed-settled=1";
+  const url = `${harness.origin}${path}`;
+  requestPolicy.expectHttpError({
+    method: "GET",
+    path,
+    status: 400,
+  });
+  await page.goto(`${harness.origin}/#token=${harness.token}`);
+  await page.evaluate(
+    async ({ requestUrl, token }) => {
+      const response = await fetch(requestUrl, {
+        headers: { "X-Simulator-Token": token },
+      });
+      await response.text();
+    },
+    { requestUrl: url, token: harness.token },
+  );
+  await expect.poll(() => requestPolicy.responseScanDiagnostics()
+    .filter((diagnostic) => diagnostic.path === path)
+  ).toHaveLength(1);
+  const [ordinaryScan] = requestPolicy.responseScanDiagnostics()
+    .filter((diagnostic) => diagnostic.path === path);
+  expect(ordinaryScan.scanMechanism).toBe("network-stream");
+
+  requestPolicy.intercept(path, {
+    status: 200,
+    contentType: "text/plain",
+    body: "covered intercepted response",
+  });
+  await page.evaluate(
+    (requestUrl) => fetch(requestUrl).then((response) => response.text()),
+    url,
+  );
+  await requestPolicy.assert();
+
+  expect(requestPolicy.responseScanDiagnostics()
+    .filter((diagnostic) => diagnostic.path === path)
+  ).toEqual([
+    ordinaryScan,
+    expect.objectContaining({ scanMechanism: "intercepted-body" }),
+  ]);
+});
+
+test("does not let an inflight ordinary same-URL response lend intercepted coverage", async ({
+  page,
+}) => {
+  const path = "/api/bootstrap?mixed-inflight=1";
+  const url = `${harness.origin}${path}`;
+  const metadataPath = "/api/bootstrap?mixed-inflight-metadata=1";
+  requestPolicy.expectHttpError({
+    method: "GET",
+    path: metadataPath,
+    status: 400,
+  });
+  requestPolicy.expectHttpError({
+    method: "GET",
+    path,
+    status: 400,
+  });
+  await page.goto(`${harness.origin}/#token=${harness.token}`);
+  await page.evaluate(
+    async ({ requestUrl, token }) => {
+      const response = await fetch(requestUrl, {
+        headers: { "X-Simulator-Token": token },
+      });
+      await response.text();
+    },
+    {
+      requestUrl: `${harness.origin}${metadataPath}`,
+      token: harness.token,
+    },
+  );
+  await expect.poll(() => requestPolicy.responseScanDiagnostics()
+    .find((diagnostic) => diagnostic.path === metadataPath)
+  ).toBeDefined();
+  const ordinaryLength = requestPolicy.responseScanDiagnostics()
+    .find((diagnostic) => diagnostic.path === metadataPath).declaredLength;
+  const interceptedBody = "covered inflight intercepted response";
+  expect(Buffer.byteLength(interceptedBody)).not.toBe(ordinaryLength);
+
+  const firstHeld = requestPolicy.hold(path);
+  const ordinaryFetch = page.evaluate(
+    ({ requestUrl, token }) => fetch(requestUrl, {
+      headers: { "X-Simulator-Token": token },
+    }).then((response) => response.text()),
+    { requestUrl: url, token: harness.token },
+  );
+  await firstHeld;
+  requestPolicy.intercept(path, {
+    status: 200,
+    contentType: "text/plain",
+    body: interceptedBody,
+  });
+  const interceptedRequest = page.waitForRequest((request) =>
+    request.url() === url
+  );
+  const interceptedFetch = page.evaluate(
+    (requestUrl) => fetch(requestUrl).then((response) => response.text()),
+    url,
+  );
+  await interceptedRequest;
+  requestPolicy.release(path);
+  await Promise.all([ordinaryFetch, interceptedFetch]);
+  await requestPolicy.assert();
+
+  expect(requestPolicy.responseScanDiagnostics()
+    .filter((diagnostic) => diagnostic.path === path)
+  ).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      declaredLength: ordinaryLength,
+      scanMechanism: "network-stream",
+    }),
+    expect.objectContaining({
+      declaredLength: Buffer.byteLength(interceptedBody),
+      scanMechanism: "intercepted-body",
+    }),
+  ]));
+  expect(requestPolicy.responseScanDiagnostics()
+    .filter((diagnostic) => diagnostic.path === path)
+  ).toHaveLength(2);
+});
+
+test("does not let an independently mocked same-URL response borrow coverage", async ({
+  page,
+}) => {
+  const path = "/api/bootstrap?independent-coverage=1";
+  const url = `${harness.origin}${path}`;
+  await page.goto(`${harness.origin}/#token=${harness.token}`);
+  requestPolicy.intercept(path, {
+    status: 200,
+    contentType: "text/plain",
+    body: "covered intercepted response",
+  });
+  await page.evaluate(
+    (requestUrl) => fetch(requestUrl).then((response) => response.text()),
+    url,
+  );
+  requestPolicy.clearIntercept(path);
+  await page.route(url, (route) => route.fulfill({
+    status: 204,
+    headers: {
+      "x-browser-harness-intercepted-coverage": "independent-marker",
+    },
+  }));
+  await page.evaluate(
+    (requestUrl) => fetch(requestUrl).then((response) => response.text()),
+    url,
+  );
+  await requestPolicy.assert();
+
+  expect(requestPolicy.responseScanSkips()).toContainEqual(
+    expect.objectContaining({
+      path,
+      reason: "response-has-no-body",
+      status: 204,
+    }),
+  );
+});
+
+test("scans effective JSON content types before fulfillment", async ({ page }) => {
+  const sentinel = "BROWSER_HARNESS_FORBIDDEN_RESPONSE_SENTINEL";
+  const jsonPath = "/favicon.svg?json-body=1";
+  const overridePath = "/favicon.svg?content-type-override=1";
+  requestPolicy.expectForbiddenResponse(jsonPath, sentinel);
+  requestPolicy.expectForbiddenResponse(overridePath, sentinel);
+  await page.goto(`${harness.origin}/#token=${harness.token}`);
+  requestPolicy.intercept(jsonPath, {
+    status: 200,
+    json: { message: sentinel },
+  });
+  requestPolicy.intercept(overridePath, {
+    status: 200,
+    headers: { "Content-Type": "application/octet-stream" },
+    contentType: "application/json",
+    body: JSON.stringify({ message: sentinel }),
+  });
+
+  await page.evaluate(
+    (paths) => Promise.all(paths.map((path) =>
+      fetch(path).then((response) => response.json())
+    )),
+    [jsonPath, overridePath],
+  );
+
+  await expect.poll(() => requestPolicy.forbiddenResponseMatches()
+    .sort((left, right) => left.url.localeCompare(right.url))
+  ).toEqual([
+    { sentinel, url: `${harness.origin}${overridePath}` },
+    { sentinel, url: `${harness.origin}${jsonPath}` },
+  ]);
+});
+
+test("rejects unsupported intercepted response options", () => {
+  expect(() => requestPolicy.intercept("/unsupported-path", {
+    path: "synthetic-response.txt",
+  })).toThrow("bounded inline body or JSON");
+  expect(() => requestPolicy.intercept("/unsupported-response", {
+    response: {},
+  })).toThrow("bounded inline body or JSON");
+  expect(() => requestPolicy.intercept("/ambiguous-body", {
+    body: "body",
+    json: { message: "json" },
+  })).toThrow("cannot specify both body and JSON");
+  expect(() => requestPolicy.intercept("/unsupported-body", {
+    body: { message: "not inline bytes" },
+  })).toThrow("body must be bytes or text");
+});
+
+test("waits for response scans queued while assertion is draining", async () => {
+  const scans = new Set();
+  const violations = [];
+  let resolveFirst;
+  let resolveSecond;
+  const first = new Promise((resolve) => {
+    resolveFirst = resolve;
+  });
+  const second = new Promise((resolve) => {
+    resolveSecond = resolve;
+  });
+  const track = (pending) => {
+    const tracked = pending.finally(() => scans.delete(tracked));
+    scans.add(tracked);
+  };
+  track(first);
+  const assertion = (async () => {
+    await drainResponseScansForTest(scans);
+    expect(violations).toEqual([]);
+  })();
+  let assertionSettled = false;
+  assertion.finally(() => {
+    assertionSettled = true;
+  }).catch(() => undefined);
+  track(second);
+
+  resolveFirst();
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(assertionSettled).toBe(false);
+  violations.push({ reason: "synthetic deferred violation" });
+  resolveSecond();
+  await expect(assertion).rejects.toThrow();
 });
 
 test("does not retrieve bodies with unsafe or ambiguous declared lengths", async () => {
@@ -380,6 +722,31 @@ test("does not retrieve bodies with unsafe or ambiguous declared lengths", async
     ]);
     expect(result.responseScanViolations).toEqual([]);
   }
+});
+
+test("fails closed when response stream setup is missing or rejected", async () => {
+  const missing = fakeResponse({});
+  delete missing.response.stream;
+  const rejected = fakeResponse({
+    stream: () => {
+      throw new Error("synthetic stream setup rejected");
+    },
+  });
+
+  const missingResult = await scanResponseForTest(missing.response);
+  const rejectedResult = await scanResponseForTest(rejected.response);
+
+  expect(missing.bodyCalls()).toBe(0);
+  expect(rejected.bodyCalls()).toBe(0);
+  expect(missingResult.responseScanViolations).toEqual([
+    expect.objectContaining({ reason: "streaming-unavailable" }),
+  ]);
+  expect(rejectedResult.responseScanViolations).toEqual([
+    expect.objectContaining({ reason: "streaming-unavailable" }),
+  ]);
+  expect(rejectedResult.responseScanDiagnostics).toEqual([
+    expect.objectContaining({ streamEstablished: false }),
+  ]);
 });
 
 test("skips responses whose method or status forbids a body", async () => {

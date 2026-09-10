@@ -164,6 +164,47 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn("timer, scoring, and lifecycle", surfaces["readme"].lower())
         self.assertIn("post-attempt", surfaces["safety guide"].lower())
 
+    def test_operating_docs_cover_browser_release_and_recovery_boundaries(self) -> None:
+        readme = (PROJECT / "README.md").read_text(encoding="utf-8")
+        contract = (PROJECT / "docs" / "cli-contract.md").read_text(encoding="utf-8")
+        safety = (PROJECT / "docs" / "agent-safety.md").read_text(encoding="utf-8")
+        policy = (PROJECT / "AGENTS.md").read_text(encoding="utf-8")
+
+        for document in (readme, contract, safety, policy):
+            self.assertIn("--port 0 --no-open", document)
+            normalized_document = " ".join(document.split())
+            self.assertIn("private", normalized_document)
+            self.assertIn("per-launch capability", normalized_document)
+
+        self.assertIn("pip install --no-index --no-deps", readme)
+        quick_start = readme.split("```sh", 1)[1].split("```", 1)[0]
+        self.assertIn("pip install --no-deps -e .", quick_start)
+        self.assertNotIn("--no-build-isolation", quick_start)
+        self.assertIn("does **not** run a TypeScript type checker", readme)
+        self.assertIn("no Python runtime dependencies", readme)
+        self.assertIn("does not include pinned fixtures", readme)
+        self.assertIn("Confirm and start", readme)
+        self.assertIn("There is no pause", readme)
+        self.assertIn("browser becomes read-only", readme)
+        self.assertIn("CLI remains the explicit fallback", readme)
+        self.assertIn("compare-and-swap revision", readme)
+        self.assertIn("Candidate-only,\nbounded history", readme)
+        self.assertIn("Troubleshooting and scoped cleanup", readme)
+        self.assertIn("official hidden tests", " ".join(readme.split()))
+        self.assertIn("X-Simulator-Token", readme)
+        self.assertIn("not an `Authorization` header", readme)
+        self.assertIn("captured request diagnostics", contract)
+        self.assertIn("pinned paths and hashes, but never fixture bytes", readme)
+        self.assertIn('submit --workspace-root "$workspace"', readme)
+        self.assertIn('submit --workspace-root "$workspace"', safety)
+        self.assertIn("setuptools>=61", readme)
+        self.assertIn("build>=1.2", readme)
+        self.assertIn("npm --prefix webui run install:browser", readme)
+        self.assertIn("compare-and-swap revisions (ETags)", contract)
+        self.assertIn("**Submit** is disabled", contract)
+        self.assertIn("explicit permission", safety)
+        self.assertIn("not a security sandbox", policy)
+
 
 if __name__ == "__main__":
     unittest.main()

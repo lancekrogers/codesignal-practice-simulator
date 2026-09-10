@@ -108,6 +108,32 @@ blocks until stopped. Tokens are URL-safe ASCII capabilities carrying at least
 256 bits. `--no-open` suppresses the injectable browser opener. Browser
 evaluation responses include `newly_submitted`, which is true only for the
 request that first finalizes an attempt.
+
+Use `--port 0 --no-open` for a safe operator launch when an available port
+should be selected and the URL will be opened manually:
+
+```sh
+codesignal-sim web --workspace-root PATH --port 0 --no-open
+python3 -m codesignal_practice_simulator web --workspace-root PATH --port 0 --no-open
+```
+
+The entire printed URL is a private, per-launch capability. Keep its fragment
+when opening it locally, but do not store or share it. The fragment is not part
+of an HTTP URL; after loading, the browser sends its value to the same
+loopback origin as the `X-Simulator-Token` header, not an `Authorization`
+header. It can therefore appear in captured request diagnostics. Restarting
+`web` rotates that capability. The new server reconnects to the selected
+attempt's durable state; it does not reset, extend, or create a duplicate
+attempt.
+
+The browser entry flow requires confirmation. Only confirmation creates an
+attempt and starts its server-authoritative timer. The timer cannot be paused,
+extended, or reset by the browser. An expired browser session is read-only:
+its source and stored results remain available, but **Submit** is disabled.
+The CLI `submit --workspace-root "$workspace"` remains available for that
+expired state and finalizes it once. A browser refresh or reconnect after that
+CLI action presents the stored submitted result.
+
 `test` and `submit` use the
 attempt-local isolated scorer; selection is held only long enough to choose the
 attempt, while scoring holds only that attempt's lock. `context` reads only
@@ -152,6 +178,21 @@ never rolls back or changes durable lifecycle state.
 validates the selected attempt's registry metadata and level before reading,
 does not fall back to a cache file, and never reads solution or study material.
 An unavailable copied level is exit 3; an invalid level syntax is exit 2.
+
+## Browser source document and concurrency
+
+The browser source document is candidate-owned. It autosaves debounced edits
+through compare-and-swap revisions (ETags), rather than letting a client
+overwrite a newer source copy. A stale save or action receives a conflict:
+the browser preserves local text and requires an explicit choice to reload the
+server version or copy the local version after refreshing its revision.
+Candidate-only history is bounded and supports explicit reset and restore.
+
+Final (`expired` or `submitted`) sessions reject source mutation. Source and
+history ownership still belongs to the candidate: an agent must ask explicit
+permission before reading either and separately before editing source. Browser
+or CLI access does not grant permission to inspect fixtures, copied tests,
+reference, solution, study, or hidden-test material.
 
 ## Output envelopes
 
