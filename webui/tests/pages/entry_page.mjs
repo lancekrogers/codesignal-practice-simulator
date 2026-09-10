@@ -5,6 +5,11 @@ export class EntryPage {
     this.page = page;
   }
 
+  async open(origin, token) {
+    await this.page.goto(`${origin}/#token=${token}`);
+    await this.expectLoaded();
+  }
+
   main() {
     return this.page.getByRole("main");
   }
@@ -32,6 +37,13 @@ export class EntryPage {
 
   async confirmStart() {
     await this.page.getByRole("button", { name: "Confirm and start" }).click();
+  }
+
+  confirmStartResponse() {
+    return this.page.waitForResponse((response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/attempts"
+    );
   }
 
   async cancelStart() {

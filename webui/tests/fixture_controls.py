@@ -23,6 +23,19 @@ def clock_from_environment() -> FileClock | None:
     return FileClock(Path(configured)) if configured else None
 
 
+def browser_opener_from_environment():
+    configured = os.environ.get("SIMULATOR_BROWSER_OPENER_FILE")
+
+    def record(url: str) -> None:
+        if not configured:
+            return
+        origin = url.split("/#", 1)[0]
+        with Path(configured).open("a", encoding="utf-8") as stream:
+            stream.write(f"{origin}\n")
+
+    return record
+
+
 def install_score_call_recorder(application: object) -> None:
     configured = os.environ.get("SIMULATOR_SCORE_CALLS_FILE")
     if not configured:

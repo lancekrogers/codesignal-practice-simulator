@@ -12,7 +12,7 @@ let requestPolicy;
 
 test.beforeEach(async ({ page }) => {
   harness = await startFixtureServer();
-  requestPolicy = installOfflineRequestPolicy(page, harness);
+  requestPolicy = await installOfflineRequestPolicy(page, harness);
 });
 
 test.afterEach(async () => {
@@ -28,11 +28,16 @@ test.afterEach(async () => {
 });
 
 test("cancels delayed saves and locks source actions after terminal time", async ({ page }) => {
+  requestPolicy.expectFailedRequest({
+    method: "PUT",
+    path: "/api/source",
+    count: 1,
+  });
   const started = await startAttempt(page);
   const attemptId = started.data.session.attempt_id;
   await append(page, "\n# persisted before terminal test");
   await expect(saveStatus(page)).toHaveText("Saved snapshot");
-  requestPolicy.delay("/api/source", 20000);
+  const sourceHeld = requestPolicy.hold("/api/source");
   const requests = trackPuts(page);
   await append(page, "\n# delayed terminal edit");
   await expect.poll(() => requests.length).toBe(1);
@@ -58,7 +63,9 @@ test("cancels delayed saves and locks source actions after terminal time", async
   await page.getByRole("tab", { name: "History" }).click();
   await expect(page.getByRole("button", { name: "Restore this version" }))
     .toBeDisabled();
-  await page.waitForTimeout(500);
+  await sourceHeld;
+  requestPolicy.release("/api/source");
+  await expect.poll(() => requests.length).toBe(1);
   expect(requests).toHaveLength(1);
   expect((await source(harness, attemptId)).content)
     .toContain("# persisted before terminal test");
@@ -81,7 +88,6 @@ test("renders the saved source directly when expiry makes the attempt terminal",
     timeResponse({ ...started.data.session, status: "expired" }, started.data.time),
   );
   await timeResponsePromise;
-  await page.waitForTimeout(100);
   await expect(page.getByText("Expired", { exact: true })).toBeVisible();
   await expect(page.locator(".fallback")).toBeVisible();
   await expect(page.locator(".fallback")).toHaveAttribute("readonly", "");

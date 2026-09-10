@@ -31,7 +31,7 @@ test.beforeEach(async ({ page }) => {
   harness = await startFixtureServer({
     clockStart: "2030-01-01T00:00:00+00:00",
   });
-  requestPolicy = installOfflineRequestPolicy(page, harness);
+  requestPolicy = await installOfflineRequestPolicy(page, harness);
 });
 
 test.afterEach(async () => {

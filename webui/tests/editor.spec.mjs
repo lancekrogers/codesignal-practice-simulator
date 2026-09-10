@@ -9,7 +9,7 @@ let requestPolicy;
 test.beforeEach(async ({ page }) => {
   try {
     harness = await startFixtureServer();
-    requestPolicy = installOfflineRequestPolicy(page, harness);
+    requestPolicy = await installOfflineRequestPolicy(page, harness);
   } catch (error) {
     const currentHarness = harness;
     harness = undefined;
@@ -298,6 +298,11 @@ function assertSafeActionableText(text, expected) {
 }
 
 test("renders a safe repair message when the selected fixture is missing", async ({ page }) => {
+  requestPolicy.expectHttpError({
+    method: "POST",
+    path: "/api/attempts",
+    status: 404,
+  });
   interceptApiError(
     "/api/attempts",
     404,
@@ -326,6 +331,11 @@ test("renders a safe repair message for invalid bootstrap data", async ({ page }
 });
 
 test("renders a bounded internal failure with a safe recovery action", async ({ page }) => {
+  requestPolicy.expectHttpError({
+    method: "GET",
+    path: "/api/bootstrap",
+    status: 500,
+  });
   requestPolicy.intercept("/api/bootstrap", {
     status: 500,
     contentType: "application/json",
@@ -346,6 +356,11 @@ test("renders a bounded internal failure with a safe recovery action", async ({ 
 });
 
 test("renders a safe conflict message when a start is already active", async ({ page }) => {
+  requestPolicy.expectHttpError({
+    method: "POST",
+    path: "/api/attempts",
+    status: 423,
+  });
   interceptApiError(
     "/api/attempts",
     423,
@@ -371,6 +386,11 @@ test("renders a safe reconnect failure without posting or leaking paths", async 
     if (request.method() === "POST") postCount += 1;
   });
   await page.reload();
+  requestPolicy.expectHttpError({
+    method: "GET",
+    path: "/api/source",
+    status: 404,
+  });
   requestPolicy.intercept("/api/source", {
     status: 404,
     contentType: "application/json",

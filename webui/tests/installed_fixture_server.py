@@ -14,7 +14,11 @@ from codesignal_practice_simulator.web import resources
 from codesignal_practice_simulator.application import RuntimeApplication
 from codesignal_practice_simulator.web.server import WebServer, WebServerConfig
 from codesignal_practice_simulator.workspace import CACHE_INPUTS, ValidatedFixtureCache
-from fixture_controls import clock_from_environment, install_score_call_recorder
+from fixture_controls import (
+    browser_opener_from_environment,
+    clock_from_environment,
+    install_score_call_recorder,
+)
 
 
 TOKEN = "installed-browser-fixture-token-" + "a" * 32
@@ -31,6 +35,7 @@ def main() -> None:
 
 
 def _serve(workspace: Path) -> None:
+    token = os.environ.get("SIMULATOR_FIXTURE_TOKEN", TOKEN)
     workspace.mkdir(parents=True, exist_ok=True)
     cache = workspace / ".cache" / "codesignal-fixtures" / "synthetic"
     paths = _cache_paths()
@@ -64,14 +69,16 @@ def _serve(workspace: Path) -> None:
         WebServerConfig(
             workspace,
             port=int(os.environ.get("SIMULATOR_SERVER_PORT", "0")),
-            no_open=True,
-            token=TOKEN,
+            no_open=False,
+            token=token,
+            browser_opener=browser_opener_from_environment(),
         ),
         application=application,
     )
     try:
         url = server.start()
-        print(json.dumps({"origin": url.split("/#", 1)[0], "token": TOKEN}), flush=True)
+        server.open_browser()
+        print(json.dumps({"origin": url.split("/#", 1)[0]}), flush=True)
         sys.stdin.buffer.read()
     finally:
         server.stop()

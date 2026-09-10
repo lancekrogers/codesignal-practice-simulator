@@ -12,7 +12,7 @@ let requestPolicy;
 
 test.beforeEach(async ({ page }) => {
   harness = await startFixtureServer();
-  requestPolicy = installOfflineRequestPolicy(page, harness);
+  requestPolicy = await installOfflineRequestPolicy(page, harness);
 });
 
 test.afterEach(async () => {
@@ -51,7 +51,11 @@ test("refresh rejects a time snapshot for another attempt", async ({ page }) => 
     ...started.data.session,
     attempt_id: "different-attempt",
   };
-  requestPolicy.expectHttpError(500);
+  requestPolicy.expectHttpError({
+    method: "POST",
+    path: "/api/submit",
+    status: 500,
+  });
   await page.route("**/api/submit**", (route) =>
     route.fulfill({
       status: 500,

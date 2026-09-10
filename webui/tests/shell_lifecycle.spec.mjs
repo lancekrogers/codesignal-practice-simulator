@@ -12,7 +12,7 @@ let requestPolicy;
 
 test.beforeEach(async ({ page }) => {
   harness = await startFixtureServer();
-  requestPolicy = installOfflineRequestPolicy(page, harness);
+  requestPolicy = await installOfflineRequestPolicy(page, harness);
 });
 
 test.afterEach(async () => {
@@ -45,7 +45,13 @@ test("updates the countdown from monotonic elapsed time without a lifecycle writ
 test("guards delayed prompt responses across rapid level and tab changes", async ({
   page,
 }) => {
-  requestPolicy.delay("/api/prompts/2", 1000);
+  requestPolicy.expectFailedRequest({
+    method: "GET",
+    path: "/api/prompts/2",
+    count: 1,
+  });
+  const promptPath = "/api/prompts/2";
+  const promptHeld = requestPolicy.hold(promptPath);
   await page.goto(`${harness.origin}/#token=${harness.token}`);
   await confirmStart(page);
   await page.getByRole("button", { name: "Level 2: Level 2" }).click();
@@ -54,19 +60,26 @@ test("guards delayed prompt responses across rapid level and tab changes", async
   await expect(page.locator(".prompt-copy")).toHaveText("No saved candidate versions yet.");
   await page.getByRole("tab", { name: "Description" }).click();
   await expect(page.locator(".prompt-copy")).toContainText("level3.md");
-  await page.waitForTimeout(1100);
+  await promptHeld;
+  requestPolicy.release(promptPath);
   await expect(page.locator(".prompt-copy")).toContainText("level3.md");
 });
 
 test("ignores an old attempt prompt after terminal cleanup replaces its shell", async ({
   page,
 }) => {
+  requestPolicy.expectFailedRequest({
+    method: "GET",
+    path: "/api/prompts/2",
+    count: 1,
+  });
   await page.goto(`${harness.origin}/#token=${harness.token}`);
   await page.clock.install();
   const started = await startWithResponse(page);
   const session = started.data.session;
   const attemptId = session.attempt_id;
-  requestPolicy.delay(`/api/prompts/2?attempt_id=${attemptId}`, 1000);
+  const promptPath = `/api/prompts/2?attempt_id=${attemptId}`;
+  const promptHeld = requestPolicy.hold(promptPath);
   const stalePromptRequest = page.waitForRequest(
     (request) =>
       new URL(request.url()).pathname === "/api/prompts/2" &&
@@ -74,12 +87,14 @@ test("ignores an old attempt prompt after terminal cleanup replaces its shell", 
   );
   await page.getByRole("button", { name: "Level 2: Level 2" }).click();
   await stalePromptRequest;
+  await promptHeld;
   requestPolicy.intercept(`/api/time?attempt_id=${attemptId}`, timeResponse({
     ...session,
     status: "expired",
   }, started.data.time));
   await page.clock.fastForward("00:15");
   await expect(page.getByText("Expired", { exact: true })).toBeVisible();
+  requestPolicy.release(promptPath);
   await expect(page.locator(".prompt-copy")).toHaveText(
     "synthetic prompt for assessment/file_storage/level1.md\n",
   );
@@ -103,8 +118,7 @@ test("removes listeners from controls in a rerendered shell", async ({ page }) =
   );
   await page.clock.fastForward("00:15");
   await page.evaluate(() => window.__oldLevelButton.click());
-  await page.waitForTimeout(100);
-  expect(stalePromptRequests).toBe(0);
+  await expect.poll(() => stalePromptRequests).toBe(0);
 });
 
 test("keeps the countdown monotonic across a successful stale resync", async ({
@@ -125,12 +139,15 @@ test("keeps the countdown monotonic across a successful stale resync", async ({
     started.data.session,
     started.data.time,
   ));
-  requestPolicy.delay(`/api/time?attempt_id=${attemptId}`, 1000);
+  const timePath = `/api/time?attempt_id=${attemptId}`;
+  const timeHeld = requestPolicy.hold(timePath);
   const resyncResponse = page.waitForResponse(
     (response) => new URL(response.url()).pathname === "/api/time",
   );
   await page.clock.fastForward("00:15");
   await page.clock.fastForward("00:02");
+  await timeHeld;
+  requestPolicy.release(timePath);
   await resyncResponse;
   const afterResync = timerSeconds(await page.getByRole("timer", {
     name: "Time remaining",
@@ -162,18 +179,19 @@ test("ignores a valid resync after terminal cleanup replaces its shell", async (
     started.data.session,
     started.data.time,
   ));
-  requestPolicy.delay(timePath, 1000);
+  const timeHeld = requestPolicy.hold(timePath);
   await page.evaluate(() => {
     window.__detachedShell = document.querySelector(".assessment-shell");
   });
   await page.clock.fastForward("00:15");
   await resyncRequest;
+  await timeHeld;
 
   await page.getByRole("button", { name: "Submit" }).click();
   await page.getByRole("button", { name: "Submit attempt" }).click();
   await expect(page.getByText("Submitted", { exact: true })).toBeVisible();
+  requestPolicy.release(timePath);
   await resyncResponse;
-  await page.waitForTimeout(50);
 
   expect(await page.evaluate(() => ({
     replacement: document.querySelector(".assessment-shell")
@@ -196,7 +214,11 @@ test("keeps an active countdown monotonic across an explicit stale refresh", asy
   const timer = page.getByRole("timer", { name: "Time remaining" });
   await page.clock.fastForward("00:10");
   const beforeRefresh = timerSeconds(await timer.innerText());
-  requestPolicy.expectHttpError(500);
+  requestPolicy.expectHttpError({
+    method: "POST",
+    path: "/api/submit",
+    status: 500,
+  });
   await page.route("**/api/submit**", (route) =>
     route.fulfill({
       status: 500,
@@ -229,6 +251,11 @@ test("shows reconnecting after a failed countdown resync", async ({ page }) => {
   await page.goto(`${harness.origin}/#token=${harness.token}`);
   await page.clock.install();
   const started = await startWithResponse(page);
+  requestPolicy.expectHttpError({
+    method: "GET",
+    path: "/api/time",
+    status: 503,
+  });
   requestPolicy.intercept(`/api/time?attempt_id=${started.data.session.attempt_id}`, {
     status: 503,
     contentType: "application/json",

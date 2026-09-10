@@ -15,7 +15,7 @@ test.beforeEach(async () => {
 });
 
 test.beforeEach(async ({ page }) => {
-  requestPolicy = installOfflineRequestPolicy(page, harness);
+  requestPolicy = await installOfflineRequestPolicy(page, harness);
 });
 
 test.afterEach(async () => {
@@ -89,9 +89,11 @@ test("shows booting and reconnecting while preserving the selected session", asy
   page.on("request", (request) => {
     if (request.method() === "POST") posts.push(request);
   });
-  requestPolicy.delay("/api/bootstrap", 250);
+  const bootstrapHeld = requestPolicy.hold("/api/bootstrap");
   const navigation = page.goto(`${harness.origin}/#token=${harness.token}`);
   await expect(page.getByText("Loading the local assessment…", { exact: true })).toBeVisible();
+  await bootstrapHeld;
+  requestPolicy.release("/api/bootstrap");
   await navigation;
   const started = await startWithResponse(page, entry, "full");
   const session = started.data.session;
@@ -102,10 +104,13 @@ test("shows booting and reconnecting while preserving the selected session", asy
     attemptId,
   );
   await entry.expectReconnectAction();
-  requestPolicy.delay(`/api/time?attempt_id=${attemptId}`, 250);
+  const timePath = `/api/time?attempt_id=${attemptId}`;
+  const timeHeld = requestPolicy.hold(timePath);
   await page.getByRole("button", { name: "Reconnect to active session" }).click();
   await expect(page.getByText("Reconnecting to the selected session…", { exact: true }))
     .toBeVisible();
+  await timeHeld;
+  requestPolicy.release(timePath);
   await assessment.expectShell();
   await assessment.expectConnected();
   await assessment.expectServerDeadline(session.deadline_at);
@@ -145,6 +150,11 @@ test("resynchronizes the timer from a server snapshot without writing lifecycle 
 test("traverses entry, dialog, tabs, and levels without narrow viewport clipping", async ({
   page,
 }) => {
+  requestPolicy.expectFailedRequest({
+    method: "GET",
+    path: "/api/prompts/2",
+    count: 1,
+  });
   await page.setViewportSize({ width: 560, height: 900 });
   const entry = new EntryPage(page);
   const assessment = new AssessmentPage(page);
@@ -164,14 +174,27 @@ test("traverses entry, dialog, tabs, and levels without narrow viewport clipping
   await page.getByRole("button", { name: "Confirm and start" }).press("Enter");
   await assessment.expectShell();
   await expect(assessment.level(1)).toBeFocused();
+  const promptFailure = page.waitForEvent("requestfailed", {
+    predicate: (request) =>
+      request.method() === "GET" &&
+      new URL(request.url()).pathname === "/api/prompts/2",
+  });
+  const promptHeld = requestPolicy.hold("/api/prompts/2");
   await page.keyboard.press("ArrowRight");
   await expect(assessment.level(2)).toBeFocused();
+  await promptHeld;
   await page.keyboard.press("Tab");
   await expect(assessment.tab("Description")).toBeFocused();
   await page.keyboard.press("ArrowRight");
   await expect(assessment.tab("History")).toBeFocused();
+  await expect(assessment.tab("History")).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Tab");
   await expect(page.getByRole("tabpanel")).toBeFocused();
+  await expect(page.locator(".prompt-copy")).toHaveText(
+    "No saved candidate versions yet.",
+  );
+  requestPolicy.release("/api/prompts/2");
+  await promptFailure;
   await assessment.expectNoHorizontalClipping();
 });
 
@@ -180,16 +203,6 @@ test("keeps expired sessions read-only and free of forbidden browser text", asyn
 }) => {
   const entry = new EntryPage(page);
   const assessment = new AssessmentPage(page);
-  const responseBodies = [];
-  const requestBodies = [];
-  page.on("request", (request) => {
-    if (request.postData()) requestBodies.push(request.postData());
-  });
-  page.on("response", (response) => {
-    void response.body()
-      .then((body) => responseBodies.push(body.toString("utf8")))
-      .catch(() => {});
-  });
   await page.goto(`${harness.origin}/#token=${harness.token}`);
   await page.clock.install();
   const started = await startWithResponse(page, entry, "full");
@@ -204,20 +217,19 @@ test("keeps expired sessions read-only and free of forbidden browser text", asyn
   await expect(page.getByTestId("output-drawer")).toContainText(
     "attempt has expired",
   );
-  await page.waitForTimeout(100);
   const forbidden = [
-    harness.token,
     "/Users/private",
     "/tmp/private",
     "FETCH_ONLY",
     "SCORER_INTERNAL_SENTINEL",
   ];
   const domText = await page.getByRole("main").innerText();
-  const networkText = [...requestBodies, ...responseBodies].join("\n");
   for (const sentinel of forbidden) {
     expect(domText).not.toContain(sentinel);
-    expect(networkText).not.toContain(sentinel);
   }
+  expect(requestPolicy.requestRecords().every(({ url }) =>
+    new URL(url).origin === harness.origin,
+  )).toBe(true);
 });
 
 async function startWithResponse(page, entry, mode) {

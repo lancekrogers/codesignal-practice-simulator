@@ -9,6 +9,7 @@
     "recover": "node build.mjs --recover-only",
     "check": "node --check check.mjs && node check.mjs",
     "check-assets": "python3 ../scripts/check_assets.py",
+    "install:browser": "playwright install chromium",
     "test:browser": "playwright test"
   },
   "devDependencies": {

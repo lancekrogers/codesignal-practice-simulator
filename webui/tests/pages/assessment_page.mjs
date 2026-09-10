@@ -1,4 +1,5 @@
 import { expect } from "@playwright/test";
+import { waitForAuthoritativeState } from "./waits.mjs";
 
 export class AssessmentPage {
   constructor(page) {
@@ -13,6 +14,22 @@ export class AssessmentPage {
     return this.page.getByRole("tab", { name });
   }
 
+  promptPane() {
+    return this.page.getByTestId("prompt-pane");
+  }
+
+  editorPane() {
+    return this.page.getByTestId("editor-pane");
+  }
+
+  outputPane() {
+    return this.page.getByTestId("output-drawer");
+  }
+
+  header() {
+    return this.page.locator("main.assessment-shell > header.assessment-header");
+  }
+
   timer() {
     return this.page.getByRole("timer", { name: "Time remaining" });
   }
@@ -22,22 +39,26 @@ export class AssessmentPage {
     await expect(this.page.getByRole("navigation", { name: "Assessment levels" }))
       .toBeVisible();
     await expect(this.page.getByRole("toolbar", { name: "Assessment actions" })).toBeVisible();
-    await expect(this.page.getByTestId("prompt-pane")).toBeVisible();
-    await expect(this.page.getByTestId("editor-pane")).toBeVisible();
-    await expect(this.page.getByTestId("output-drawer")).toBeVisible();
+    await expect(this.promptPane()).toBeVisible();
+    await expect(this.editorPane()).toBeVisible();
+    await expect(this.outputPane()).toBeVisible();
   }
 
   async expectConnected() {
-    await expect(this.page.getByText("Connected", { exact: true })).toBeVisible();
+    await expect(this.header().getByText("Connected", { exact: true })).toBeVisible();
   }
 
   async expectLifecycle(status) {
-    await expect(this.page.getByText(status, { exact: true })).toBeVisible();
+    await expect(this.header().getByText(status, { exact: true })).toBeVisible();
   }
 
   async expectServerDeadline(deadline) {
     await expect(this.page.getByText(`Server deadline: ${deadline}`, { exact: true }))
       .toBeVisible();
+  }
+
+  async waitForState(attemptId, status, options) {
+    return waitForAuthoritativeState(this.page, attemptId, status, options);
   }
 
   async expectNoHorizontalClipping() {

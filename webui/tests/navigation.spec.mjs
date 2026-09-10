@@ -9,7 +9,7 @@ let requestPolicy;
 
 test.beforeEach(async ({ page }) => {
   harness = await startFixtureServer();
-  requestPolicy = installOfflineRequestPolicy(page, harness);
+  requestPolicy = await installOfflineRequestPolicy(page, harness);
 });
 
 test.afterEach(async () => {
@@ -122,10 +122,12 @@ test("restores each selected tab label and uses history-specific status text", a
     await expect(panel).toHaveAttribute("aria-labelledby", `prompt-tab-${tab}`);
   }
 
-  requestPolicy.delay("/api/source/history", 350);
+  const historyHeld = requestPolicy.hold("/api/source/history");
   await page.getByRole("tab", { name: "Description" }).click();
   await page.getByRole("tab", { name: "History" }).click();
   await expect(panel).toHaveText("Loading candidate source history…");
+  await historyHeld;
+  requestPolicy.release("/api/source/history");
   await expect(panel).toHaveText("No saved candidate versions yet.");
 
   requestPolicy.intercept("/api/source/history", {
@@ -137,7 +139,11 @@ test("restores each selected tab label and uses history-specific status text", a
       error: { code: "temporary_failure", message: "history unavailable" },
     }),
   });
-  requestPolicy.expectHttpError(503);
+  requestPolicy.expectHttpError({
+    method: "GET",
+    path: "/api/source/history",
+    status: 503,
+  });
   await page.getByRole("tab", { name: "Description" }).click();
   await page.getByRole("tab", { name: "History" }).click();
   await expect(panel).toHaveText(
@@ -227,13 +233,19 @@ test("renders reached, completed, and practice-test markers from score data", as
 test("guards prompt races and disposes the prompt cache on refresh", async ({
   page,
 }) => {
-  requestPolicy.delay("/api/prompts/2", 1000);
+  requestPolicy.expectFailedRequest({
+    method: "GET",
+    path: "/api/prompts/2",
+    count: 1,
+  });
+  const promptHeld = requestPolicy.hold("/api/prompts/2");
   const promptRequests = trackPromptRequests(page);
   await startAttempt(page);
   await page.getByRole("button", { name: "Level 2: Level 2" }).click();
   await page.getByRole("button", { name: "Level 3: Level 3" }).click();
   await expectPrompt(page, 3);
-  await page.waitForTimeout(1100);
+  await promptHeld;
+  requestPolicy.release("/api/prompts/2");
   await expectPrompt(page, 3);
   await page.reload();
   await page.getByRole("button", { name: "Reconnect to active session" }).click();

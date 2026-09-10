@@ -13,7 +13,7 @@ test.beforeEach(async ({ page }) => {
   harness = await startFixtureServer({
     clockStart: "2030-01-01T00:00:00+00:00",
   });
-  requestPolicy = installOfflineRequestPolicy(page, harness);
+  requestPolicy = await installOfflineRequestPolicy(page, harness);
 });
 
 test.afterEach(async () => {
@@ -76,7 +76,15 @@ test("lost submit response recovers terminal state and retries idempotently", as
   const started = await startAttempt(page);
   const { attempt_id: attemptId } = started.data.session;
 
-  requestPolicy.expectConsoleError("Failed to load resource: net::ERR_CONNECTION_CLOSED");
+  requestPolicy.expectConsoleError({
+    message: "Failed to load resource: net::ERR_CONNECTION_CLOSED",
+    count: 1,
+  });
+  requestPolicy.expectFailedRequest({
+    method: "POST",
+    path: "/api/submit",
+    count: 1,
+  });
   await page.route("**/api/submit*", async (route) => {
     await route.fetch();
     await route.abort("connectionclosed");

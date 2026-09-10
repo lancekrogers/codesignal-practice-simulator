@@ -114,7 +114,6 @@ def main() -> int:
                 "run",
                 "test:browser",
                 "--",
-                "--reporter=line",
                 "--output",
                 str(output),
             ],

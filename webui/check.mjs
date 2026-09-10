@@ -46,6 +46,9 @@ if (packageJson.scripts["check-assets"] !== "python3 ../scripts/check_assets.py"
 if (packageJson.scripts["test:browser"] !== "playwright test") {
   errors.push("test:browser must use the local Playwright CLI");
 }
+if (packageJson.scripts["install:browser"] !== "playwright install chromium") {
+  errors.push("install:browser must install only the locked Chromium");
+}
 if (packageJson.dependencies) {
   errors.push("runtime dependencies are not allowed");
 }

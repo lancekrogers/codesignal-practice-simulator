@@ -12,7 +12,7 @@ let requestPolicy;
 
 test.beforeEach(async ({ page }) => {
   harness = await startFixtureServer();
-  requestPolicy = installOfflineRequestPolicy(page, harness);
+  requestPolicy = await installOfflineRequestPolicy(page, harness);
 });
 
 test.afterEach(async () => {
@@ -44,12 +44,14 @@ test("debounced autosave survives a refresh", async ({ page }) => {
 
 test("serializes rapid edits and saves the latest buffer", async ({ page }) => {
   const started = await startAttempt(page);
-  requestPolicy.delay("/api/source", 350);
+  const firstSaveHeld = requestPolicy.hold("/api/source");
   const requests = trackPuts(page);
 
   await append(page, "\n# first queued edit");
   await expect.poll(() => requests.length).toBe(1);
+  await firstSaveHeld;
   await append(page, "\n# final queued edit");
+  requestPolicy.release("/api/source");
   await expect(saveStatus(page)).toHaveText("Saved snapshot");
 
   expect(requests).toHaveLength(2);
@@ -81,7 +83,11 @@ test("shows a failed save and retries it successfully", async ({ page }) => {
       error: { code: "temporary_failure", message: "temporary save failure" },
     }),
   });
-  requestPolicy.expectHttpError(503);
+  requestPolicy.expectHttpError({
+    method: "PUT",
+    path: "/api/source",
+    status: 503,
+  });
 
   await append(page, "\n# retry this save");
   await expect(saveStatus(page)).toHaveText("Save failed — retry");
@@ -132,7 +138,11 @@ test("preserves local text and explicitly reloads the server after a stale PUT",
   const serverContent = `SERVER VERSION\n${"bounded ".repeat(100)}SERVER HIDDEN`;
   const serverSave = await putSource(attemptId, serverContent, started.data.source.etag);
   expect(serverSave.status).toBe(200);
-  requestPolicy.expectHttpError(409);
+  requestPolicy.expectHttpError({
+    method: "PUT",
+    path: "/api/source",
+    status: 409,
+  });
 
   const localMarker = "# local conflict text";
   await append(page, `\n${localMarker}`);
@@ -162,7 +172,11 @@ test("explicitly copies local text after refreshing a conflict ETag", async ({ p
     "SERVER COPY VERSION\n",
     started.data.source.etag,
   );
-  requestPolicy.expectHttpError(409);
+  requestPolicy.expectHttpError({
+    method: "PUT",
+    path: "/api/source",
+    status: 409,
+  });
   const localMarker = "# copied local conflict text";
   const requests = trackPuts(page);
 
@@ -186,12 +200,15 @@ test("keeps conflict unresolved while typing until local recovery is explicit", 
     "SERVER CONFLICT VERSION\n",
     started.data.source.etag,
   );
-  requestPolicy.expectHttpError(409);
+  requestPolicy.expectHttpError({
+    method: "PUT",
+    path: "/api/source",
+    status: 409,
+  });
   await append(page, "\n# conflict edit");
   await expect(saveStatus(page)).toHaveText("Conflict — choose a version");
   const requests = trackPuts(page);
   await append(page, "\n# typed while unresolved");
-  await page.waitForTimeout(700);
   await expect(saveStatus(page)).toHaveText("Conflict — choose a version");
   expect(requests).toHaveLength(0);
   await page.getByRole("button", { name: "Copy local version" }).click();
@@ -212,7 +229,7 @@ test("pauses Monaco and preserves the buffer across a delayed source action", as
   await restore.click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: "Cancel" }).click();
-  requestPolicy.delay("/api/source/restore", 500);
+  const restoreHeld = requestPolicy.hold("/api/source/restore");
   await restore.click();
   const response = page.waitForResponse((item) =>
     new URL(item.url()).pathname === "/api/source/restore",
@@ -220,8 +237,10 @@ test("pauses Monaco and preserves the buffer across a delayed source action", as
   await dialog.getByRole("button", { name: "Restore version" }).click();
   const input = page.locator(".monaco-editor .native-edit-context");
   await expect(input).toHaveAttribute("aria-autocomplete", "none");
+  await restoreHeld;
   await page.locator(".monaco-editor").click();
   await page.keyboard.type("\n# blocked during action");
+  requestPolicy.release("/api/source/restore");
   await response;
   await expect(input).toHaveAttribute("aria-autocomplete", "both");
   await expect(page.locator(".monaco-editor .view-lines")).not.toContainText(
@@ -235,7 +254,7 @@ test("delayed restore holds the shared lease without entering testing", async ({
   await expect(saveStatus(page)).toHaveText("Saved snapshot");
   await page.getByRole("tab", { name: "History" }).click();
   const restore = page.getByRole("button", { name: "Restore this version" }).first();
-  requestPolicy.delay("/api/source/restore", 500);
+  const restoreHeld = requestPolicy.hold("/api/source/restore");
   await restore.click();
   const dialog = page.getByRole("dialog");
   const restoreRequest = page.waitForRequest((item) =>
@@ -247,10 +266,12 @@ test("delayed restore holds the shared lease without entering testing", async ({
   );
   await dialog.getByRole("button", { name: "Restore version" }).click();
   await restoreRequest;
+  await restoreHeld;
   const run = page.getByRole("button", { name: "Run Tests" });
   await expect(run).toBeDisabled();
   await expect(run).toHaveText("Run Tests");
   await expect(page.getByRole("button", { name: "Submit" })).toBeDisabled();
+  requestPolicy.release("/api/source/restore");
   await response;
 });
 
@@ -297,7 +318,11 @@ test("recovers an action conflict through the explicit local choice", async ({ p
   const restore = page.getByRole("button", { name: "Restore this version" }).first();
   const current = await source(harness, attemptId);
   await putSource(attemptId, "SERVER ACTION VERSION\n", current.etag);
-  requestPolicy.expectHttpError(409);
+  requestPolicy.expectHttpError({
+    method: "POST",
+    path: "/api/source/restore",
+    status: 409,
+  });
   await restore.click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: "Restore version" }).click();

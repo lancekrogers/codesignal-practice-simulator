@@ -12,7 +12,7 @@ let requestPolicy;
 
 test.beforeEach(async ({ page }) => {
   harness = await startFixtureServer();
-  requestPolicy = installOfflineRequestPolicy(page, harness);
+  requestPolicy = await installOfflineRequestPolicy(page, harness);
 });
 
 test.afterEach(async () => {
@@ -70,7 +70,11 @@ test("candidate failure is distinct from transport and internal failure", async 
   await expect(page.getByTestId("output-drawer")).toContainText("Needs work");
   await page.unroute("**/api/test**");
   await page.route("**/api/test**", async (route) => {
-    requestPolicy.expectHttpError(500);
+    requestPolicy.expectHttpError({
+      method: "POST",
+      path: "/api/test",
+      status: 500,
+    });
     await route.fulfill({
       status: 500,
       contentType: "application/json",
@@ -182,10 +186,9 @@ test("flushes the exact source before one test request", async ({ page }) => {
 
 test("double-click and competing actions produce one evaluation", async ({ page }) => {
   let tests = 0;
-  await page.route("**/api/test**", async (route) => {
-    tests += 1;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    await route.continue();
+  const testHeld = requestPolicy.hold("/api/test");
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/test") tests += 1;
   });
   await openAttempt(page);
   const run = page.getByRole("button", { name: "Run Tests" });
@@ -193,7 +196,12 @@ test("double-click and competing actions produce one evaluation", async ({ page 
     button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   });
-  await page.getByRole("button", { name: "Submit" }).click();
+  await expect.poll(() => tests).toBe(1);
+  await testHeld;
+  await page.getByRole("button", { name: "Submit" }).evaluate((button) =>
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })),
+  );
+  requestPolicy.release("/api/test");
   await expect(page.getByTestId("output-drawer")).toContainText("Practice result");
   expect(tests).toBe(1);
 });
@@ -211,7 +219,7 @@ test("shared lock blocks evaluations during delayed restore and reset", async ({
     return request.method() === "POST" &&
       ["/api/test", "/api/submit"].includes(path);
   });
-  requestPolicy.delay("/api/source/restore", 500);
+  const restoreHeld = requestPolicy.hold("/api/source/restore");
   const restoreRequest = page.waitForRequest(
     (request) => new URL(request.url()).pathname === "/api/source/restore",
   );
@@ -221,15 +229,17 @@ test("shared lock blocks evaluations during delayed restore and reset", async ({
   await restore.click();
   await page.getByRole("dialog").getByRole("button", { name: "Restore version" }).click();
   await restoreRequest;
+  await restoreHeld;
   await tryEvaluationActions(page);
   expect(evaluations).toHaveLength(0);
+  requestPolicy.release("/api/source/restore");
   await restoreResponse;
   await expect(page.locator(".monaco-editor .view-lines")).toContainText(
     "restore target",
   );
   await expect(saveStatus(page)).toHaveText("Saved snapshot");
 
-  requestPolicy.delay("/api/source/reset", 500);
+  const resetHeld = requestPolicy.hold("/api/source/reset");
   const resetRequest = page.waitForRequest(
     (request) => new URL(request.url()).pathname === "/api/source/reset",
   );
@@ -239,8 +249,10 @@ test("shared lock blocks evaluations during delayed restore and reset", async ({
   await page.getByRole("button", { name: "Reset" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Reset source" }).click();
   await resetRequest;
+  await resetHeld;
   await tryEvaluationActions(page);
   expect(evaluations).toHaveLength(0);
+  requestPolicy.release("/api/source/reset");
   await resetResponse;
   await expect(page.locator(".monaco-editor .view-lines")).not.toContainText(
     "restore target",
@@ -262,7 +274,7 @@ test("shared lock blocks reset and restore during delayed testing", async ({ pag
     return ["PUT", "POST"].includes(request.method()) &&
       path.startsWith("/api/source");
   });
-  requestPolicy.delay("/api/test", 500);
+  const testHeld = requestPolicy.hold("/api/test");
   const testRequest = page.waitForRequest(
     (request) => new URL(request.url()).pathname === "/api/test",
   );
@@ -271,6 +283,7 @@ test("shared lock blocks reset and restore during delayed testing", async ({ pag
   );
   await page.getByRole("button", { name: "Run Tests" }).click();
   await testRequest;
+  await testHeld;
   const reset = page.getByRole("button", { name: "Reset" });
   await expect(reset).toBeDisabled();
   await restore.click();
@@ -279,6 +292,7 @@ test("shared lock blocks reset and restore during delayed testing", async ({ pag
     await dialog.getByRole("button", { name: "Restore version" }).click();
   }
   expect(sourceMutations).toHaveLength(0);
+  requestPolicy.release("/api/test");
   await testResponse;
   await expect(page.getByTestId("output-drawer")).toContainText("Practice result");
   await expect(page.locator(".monaco-editor .view-lines")).toContainText(

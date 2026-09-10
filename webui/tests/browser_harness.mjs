@@ -1,13 +1,22 @@
+import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { expect } from "@playwright/test";
 import { writeClock } from "./clock_file.mjs";
 import { createContinuityControls } from "./continuity_controls.mjs";
+import {
+  readReadyLine,
+  stopChild,
+  waitForHttpReadiness,
+} from "./fixture_process.mjs";
+
+export { installOfflineRequestPolicy } from "./network_guard.mjs";
 
 const projectRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+const DEFAULT_CLOCK_START = "2030-01-01T00:00:00+00:00";
 
 export async function startFixtureServer(options = {}) {
   const fixture = await prepareFixture(options);
@@ -16,8 +25,7 @@ export async function startFixtureServer(options = {}) {
     await launchFixture(runtime, fixture);
     return createFixtureHandle(fixture, runtime);
   } catch (error) {
-    if (runtime.child) await stopChild(runtime.child);
-    await rm(fixture.workspace, { recursive: true, force: true });
+    await cleanupFixture(runtime.child, fixture.workspace);
     throw error;
   }
 }
@@ -28,10 +36,27 @@ async function prepareFixture(options) {
     ? resolve(projectRoot, process.env.SIMULATOR_SERVER_SCRIPT)
     : join(projectRoot, "webui", "tests", "fixture_server.py");
   const workspace = await mkdtemp(join(tmpdir(), "codesignal-browser-fixture-"));
-  const clockFile = join(workspace, "test-clock.txt");
-  const scoreCallsFile = join(workspace, "score-calls.txt");
-  if (options.clockStart) await writeFile(clockFile, options.clockStart, "utf8");
-  return { clockFile, installed, options, script, scoreCallsFile, workspace };
+  try {
+    const clockFile = join(workspace, "test-clock.txt");
+    const openerFile = join(workspace, "browser-opens.txt");
+    const scoreCallsFile = join(workspace, "score-calls.txt");
+    const clockStart = options.clockStart ?? DEFAULT_CLOCK_START;
+    const token = options.token ?? createFixtureToken();
+    await writeFile(clockFile, clockStart, "utf8");
+    return {
+      clockFile,
+      clockStart,
+      installed,
+      openerFile,
+      script,
+      scoreCallsFile,
+      token,
+      workspace,
+    };
+  } catch (error) {
+    await rm(workspace, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 async function launchFixture(runtime, fixture) {
@@ -41,32 +66,74 @@ async function launchFixture(runtime, fixture) {
     {
       cwd: projectRoot,
       env: fixtureEnvironment(fixture.installed, fixture.workspace, runtime.port, {
-        clockFile: fixture.options.clockStart ? fixture.clockFile : undefined,
+        clockFile: fixture.clockFile,
+        openerFile: fixture.openerFile,
         scoreCallsFile: fixture.scoreCallsFile,
+        token: fixture.token,
       }),
       stdio: ["pipe", "pipe", "pipe"],
     },
   );
   runtime.details = await readReadyLine(runtime.child);
-  if (!runtime.details?.origin || !runtime.details?.token) {
+  if (!runtime.details?.origin) {
     throw new Error("fixture server emitted incomplete startup data");
   }
   runtime.port = Number(new URL(runtime.details.origin).port);
+  await waitForHttpReadiness(runtime.details.origin);
 }
 
 function createFixtureHandle(fixture, runtime) {
+  const handle = {
+    ...createContinuityControls(projectRoot, fixture.workspace),
+    ...fixtureControls(fixture, runtime),
+  };
+  Object.defineProperties(handle, fixtureMetadata(fixture, runtime));
+  return handle;
+}
+
+function fixtureMetadata(fixture, runtime) {
+  return {
+    origin: {
+      enumerable: true,
+      get: () => runtime.details.origin,
+    },
+    token: {
+      enumerable: true,
+      get: () => fixture.token,
+    },
+    attemptId: {
+      enumerable: true,
+      get: () => readAttemptId(fixture.workspace),
+    },
+  };
+}
+
+function readAttemptId(workspace) {
+  try {
+    return JSON.parse(readFileSync(
+      join(workspace, "attempts", "active.json"),
+      "utf8",
+    )).attempt_id;
+  } catch (error) {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function fixtureControls(fixture, runtime) {
   let closePromise;
   return {
-    ...createContinuityControls(projectRoot, fixture.workspace),
-    get origin() {
-      return runtime.details.origin;
-    },
-    get token() {
-      return runtime.details.token;
-    },
     async setClock(value) {
-      if (!fixture.options.clockStart) throw new Error("fixture clock is not controlled");
       await writeClock(fixture.clockFile, value);
+    },
+    async browserOpenerCalls() {
+      try {
+        return (await readFile(fixture.openerFile, "utf8")).trim().split("\n")
+          .filter(Boolean);
+      } catch (error) {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      }
     },
     async scoreCalls() {
       try {
@@ -87,12 +154,22 @@ function createFixtureHandle(fixture, runtime) {
       await launchFixture(runtime, fixture);
     },
     async close() {
-      closePromise ??= stopChild(runtime.child).then(() =>
-        rm(fixture.workspace, { recursive: true, force: true }),
-      );
+      closePromise ??= cleanupFixture(runtime.child, fixture.workspace);
       return closePromise;
     },
   };
+}
+
+function createFixtureToken() {
+  return `browser-fixture-${randomBytes(32).toString("base64url")}`;
+}
+
+async function cleanupFixture(child, workspace) {
+  try {
+    if (child) await stopChild(child);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
 }
 
 function fixtureEnvironment(installed, workspace, port, options) {
@@ -100,356 +177,15 @@ function fixtureEnvironment(installed, workspace, port, options) {
     ...process.env,
     SIMULATOR_WORKSPACE: workspace,
     SIMULATOR_SERVER_PORT: String(port || 0),
+    SIMULATOR_FIXTURE_TOKEN: options.token,
+    SIMULATOR_BROWSER_OPENER_FILE: options.openerFile,
     PYTHONPATH: installed
       ? ""
       : [join(projectRoot, "src"), process.env.PYTHONPATH]
           .filter(Boolean)
           .join(delimiter),
   };
-  if (options.clockFile) environment.SIMULATOR_CLOCK_FILE = options.clockFile;
+  environment.SIMULATOR_CLOCK_FILE = options.clockFile;
   environment.SIMULATOR_SCORE_CALLS_FILE = options.scoreCallsFile;
   return environment;
-}
-
-function readReadyLine(child) {
-  return new Promise((resolvePromise, reject) => {
-    let output = "";
-    let errors = "";
-    let settled = false;
-    const timeout = setTimeout(() => fail(new Error(
-      `fixture server did not start: ${errors}`,
-    )), 10000);
-    const cleanup = () => {
-      clearTimeout(timeout);
-      child.stdout.off("data", onStdout);
-      child.stdout.off("end", onEnd);
-      child.stderr.off("data", onStderr);
-      child.off("error", onError);
-      child.off("exit", onExit);
-    };
-    const fail = (error) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(error);
-    };
-    const onStdout = (chunk) => {
-      output += chunk.toString();
-      const newline = output.indexOf("\n");
-      if (newline < 0 || settled) return;
-      settled = true;
-      cleanup();
-      try {
-        resolvePromise(JSON.parse(output.slice(0, newline)));
-      } catch (error) {
-        reject(new Error(`fixture server emitted invalid startup data: ${error}`));
-      }
-    };
-    const onEnd = () => fail(new Error(`fixture server closed stdout: ${errors}`));
-    const onStderr = (chunk) => {
-      errors += chunk.toString();
-    };
-    const onError = (error) => fail(error);
-    const onExit = (code, signal) => fail(new Error(
-      `fixture server exited before startup (${code ?? `signal ${signal}`}): ${errors}`,
-    ));
-    child.stdout.on("data", onStdout);
-    child.stdout.once("end", onEnd);
-    child.stderr.on("data", onStderr);
-    child.once("error", onError);
-    child.once("exit", onExit);
-  });
-}
-
-async function stopChild(child) {
-  const exited = waitForChildClose(child);
-  if (child.exitCode === null && child.signalCode === null) {
-    if (!child.stdin.destroyed) child.stdin.end();
-    if (await waitForChildCloseWithin(exited, 5000)) return;
-    child.kill("SIGTERM");
-    if (!(await waitForChildCloseWithin(exited, 1000))) child.kill("SIGKILL");
-  }
-  await exited;
-}
-
-function waitForChildClose(child) {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return Promise.resolve();
-  }
-  return new Promise((resolvePromise) => child.once("close", resolvePromise));
-}
-
-async function waitForChildCloseWithin(exited, milliseconds) {
-  let timeout;
-  const deadline = new Promise((resolvePromise) => {
-    timeout = setTimeout(() => resolvePromise(false), milliseconds);
-  });
-  try {
-    return await Promise.race([exited.then(() => true), deadline]);
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-export function installOfflineRequestPolicy(page, harness) {
-  const state = {
-    expectedOrigin: harness.origin,
-    patchApplication: false,
-    blockedRequests: [],
-    relevantRequests: new Map(),
-    relevantResponses: new Map(),
-    settledRequests: new Set(),
-    sameOriginRequests: [],
-    failedRequests: [],
-    unsuccessfulResponses: [],
-    consoleErrors: [],
-    pageErrors: [],
-    expectedHttpErrors: new Set(),
-    expectedConsoleErrors: new Set(),
-    interceptions: new Map(),
-    delays: new Map(),
-  };
-  page.on("request", (request) => trackRequest(request, state));
-  page.on("response", (response) => trackResponse(response, state));
-  page.on("requestfailed", (request) => trackFailure(request, state));
-  page.on("console", (message) => {
-    if (message.type() === "error") state.consoleErrors.push(message.text());
-  });
-  page.on("pageerror", (error) => state.pageErrors.push(error.message));
-  page.route("**/*", (route) => routeRequest(route, state));
-  return {
-    refreshOrigin() {
-      state.expectedOrigin = harness.origin;
-    },
-    forceMonacoInitializationFailure() {
-      state.patchApplication = true;
-    },
-    intercept(path, response) {
-      state.interceptions.set(path, response);
-    },
-    clearIntercept(path) {
-      state.interceptions.delete(path);
-    },
-    expectHttpError(status) {
-      state.expectedHttpErrors.add(status);
-    },
-    expectConsoleError(message) {
-      state.expectedConsoleErrors.add(message);
-    },
-    delay(path, milliseconds) {
-      state.delays.set(path, milliseconds);
-    },
-    assertManifestResources(manifest, requiredNames, lazyNames) {
-      assertManifestClassification(manifest, requiredNames, lazyNames);
-      assertSuccessfulAssets(state, requiredNames);
-    },
-    assert() {
-      return assertPolicyState(state);
-    },
-  };
-}
-
-function trackRequest(request, state) {
-  try {
-    const url = new URL(request.url());
-    if (url.origin === state.expectedOrigin) {
-      state.sameOriginRequests.push({
-        method: request.method(),
-        path: url.pathname,
-        resourceType: request.resourceType(),
-      });
-    }
-  } catch {
-    // The route handler records malformed URLs as blocked requests.
-  }
-  if (!isRelevantRequest(request, state.expectedOrigin)) return;
-  state.relevantRequests.set(request, {
-    resourceType: request.resourceType(),
-    url: request.url(),
-  });
-}
-
-function trackResponse(response, state) {
-  const request = response.request();
-  if (!isRelevantRequest(request, state.expectedOrigin)) return;
-  state.relevantResponses.set(request, response);
-  state.settledRequests.add(request);
-  if (response.status() < 200 || response.status() >= 400) {
-    state.unsuccessfulResponses.push({
-      status: response.status(),
-      resourceType: request.resourceType(),
-      url: response.url(),
-    });
-  }
-}
-
-function trackFailure(request, state) {
-  if (!isRelevantRequest(request, state.expectedOrigin)) return;
-  state.settledRequests.add(request);
-  state.failedRequests.push({
-    error: request.failure()?.errorText || "unknown request failure",
-    resourceType: request.resourceType(),
-    url: request.url(),
-  });
-}
-
-function isRelevantRequest(request, expectedOrigin) {
-  if (["document", "script", "stylesheet", "font", "worker"].includes(
-    request.resourceType(),
-  )) return true;
-  try {
-    const url = new URL(request.url());
-    return url.origin === expectedOrigin && (
-      url.pathname === "/manifest.json" || /\.(?:js|css|ttf)$/.test(url.pathname)
-    );
-  } catch {
-    return false;
-  }
-}
-
-async function routeRequest(route, state) {
-  let url;
-  try {
-    url = new URL(route.request().url());
-  } catch {
-    state.blockedRequests.push(route.request().url());
-    await route.abort("blockedbyclient");
-    return;
-  }
-  if (!isAllowedUrl(url, state.expectedOrigin)) {
-    state.blockedRequests.push(url.href);
-    await route.abort("blockedbyclient");
-    return;
-  }
-  const interception =
-    state.interceptions.get(url.pathname + url.search) ||
-    state.interceptions.get(url.pathname);
-  const delay = state.delays.get(url.pathname + url.search) ||
-    state.delays.get(url.pathname);
-  if (delay) await new Promise((resolvePromise) => setTimeout(resolvePromise, delay));
-  if (interception) {
-    if (interception.status >= 400) state.expectedHttpErrors.add(interception.status);
-    await route.fulfill(interception);
-    return;
-  }
-  if (state.patchApplication && /\/app(?:-[^/]+)?\.js$/.test(url.pathname)) {
-    await routeWithEditorFailure(route);
-    return;
-  }
-  await route.continue();
-}
-
-function isAllowedUrl(url, expectedOrigin) {
-  const loopback = ["127.0.0.1", "localhost", "::1"].includes(url.hostname);
-  return loopback && url.origin === expectedOrigin;
-}
-
-async function routeWithEditorFailure(route) {
-  const response = await route.fetch();
-  const body = await response.text();
-  const marker = 'ariaLabel:"Python source editor"';
-  const markerIndex = body.indexOf(marker);
-  const createToken = ".create(";
-  const createIndex = body.lastIndexOf(createToken, markerIndex);
-  if (markerIndex < 0 || createIndex < 0 || markerIndex - createIndex > 2000) {
-    throw new Error("could not locate the generated Monaco initialization");
-  }
-  const patchedBody = body.slice(0, createIndex) +
-    '.create((()=>{throw new Error("forced Monaco initialization failure")})(),' +
-    body.slice(createIndex + createToken.length);
-  await route.fulfill({ response, body: patchedBody });
-}
-
-function assertManifestClassification(manifest, requiredNames, lazyNames) {
-  const names = new Set(Object.keys(manifest));
-  const classified = new Set([...requiredNames, ...lazyNames]);
-  expect(classified).toEqual(names);
-}
-
-function assertSuccessfulAssets(state, requiredNames) {
-  const successful = new Set();
-  for (const [request, response] of state.relevantResponses) {
-    const name = assetName(response.url(), state.expectedOrigin);
-    if (name && response.status() >= 200 && response.status() < 400) {
-      successful.add(name);
-    }
-    expect(new URL(response.url()).origin).toBe(state.expectedOrigin);
-  }
-  for (const name of requiredNames) {
-    expect(successful, `asset was not loaded successfully: ${name}`).toContain(name);
-  }
-}
-
-function assetName(value, expectedOrigin) {
-  const url = new URL(value);
-  if (url.origin !== expectedOrigin) return undefined;
-  if (url.pathname === "/") return "index.html";
-  return url.pathname.startsWith("/") ? url.pathname.slice(1) : undefined;
-}
-
-async function assertPolicyState(state) {
-  await expect.poll(
-    () => [...state.relevantRequests.entries()]
-      .filter(([request]) => !state.settledRequests.has(request))
-      .map(([, details]) => details),
-    {
-      message: "relevant same-origin static requests did not settle",
-      timeout: 5000,
-    },
-  ).toEqual([]);
-  expect(state.blockedRequests).toEqual([]);
-  expect(state.failedRequests).toEqual([]);
-  expect(state.unsuccessfulResponses).toEqual([]);
-  expect(state.consoleErrors.filter((message) =>
-    !isExpectedHttpConsoleError(message, state.expectedHttpErrors) &&
-    !state.expectedConsoleErrors.has(message),
-  )).toEqual([]);
-  expect(state.pageErrors).toEqual([]);
-  for (const request of state.sameOriginRequests) {
-    expect(
-      isDocumentedRequest(request.path),
-      `undocumented same-origin request: ${JSON.stringify(request)}`,
-    ).toBe(true);
-  }
-  for (const details of state.relevantRequests.values()) {
-    expect(new URL(details.url).origin).toBe(state.expectedOrigin);
-  }
-}
-
-function isExpectedHttpConsoleError(message, expectedStatuses) {
-  const match = message.match(/status of (\d{3})/u);
-  return Boolean(match && expectedStatuses.has(Number(match[1])));
-}
-
-function isDocumentedRequest(path) {
-  if (
-    [
-      "/",
-      "/index.html",
-      "/manifest.json",
-      "/favicon.svg",
-      "/ASSET_PROVENANCE.txt",
-      "/NOTICE.txt",
-    ]
-      .includes(path)
-  ) {
-    return true;
-  }
-  if (path.startsWith("/api/")) {
-    return (
-      [
-        "/api/bootstrap",
-        "/api/attempts",
-        "/api/source",
-        "/api/source/history",
-        "/api/source/reset",
-        "/api/source/restore",
-        "/api/time",
-        "/api/test",
-        "/api/submit",
-      ].includes(path) ||
-      /^\/api\/prompts\/[1-4]$/u.test(path)
-    );
-  }
-  return /^\/[A-Za-z0-9._-]+\.(?:js|css|ttf)$/u.test(path);
 }

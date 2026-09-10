@@ -21,6 +21,10 @@ resolved registry URLs, integrity hashes, licenses, and platform-specific
 optional packages for the complete transitive graph. `npm ci --ignore-scripts`
 is the reproducible installation command.
 
+The browser harness uses Playwright Chromium revision `1243`
+(`153.0.8010.12`), selected by the locked Playwright `1.63.0` package.
+Install only that browser with `npm run install:browser`.
+
 ## Licenses
 
 The browser bundle contains Monaco editor code and its locked non-optional

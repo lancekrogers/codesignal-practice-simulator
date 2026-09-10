@@ -3,6 +3,7 @@ import {
   installOfflineRequestPolicy,
   startFixtureServer,
 } from "./browser_harness.mjs";
+import { EditorPage } from "./pages/editor_page.mjs";
 import { timeResponse } from "./shell_test_support.mjs";
 
 let harness;
@@ -10,7 +11,7 @@ let requestPolicy;
 
 test.beforeEach(async ({ page }) => {
   harness = await startFixtureServer();
-  requestPolicy = installOfflineRequestPolicy(page, harness);
+  requestPolicy = await installOfflineRequestPolicy(page, harness);
 });
 
 test.afterEach(async () => {
@@ -53,15 +54,20 @@ test("persists validated settings without storing source authority", async ({
   page,
 }) => {
   await startAttempt(page);
-  await page.getByRole("button", { name: "Settings" }).click();
-  const dialog = page.getByRole("dialog", { name: "Editor settings" });
-  await expect(dialog).toBeVisible();
-  await dialog.getByLabel("Theme").selectOption("vs-light");
-  await dialog.getByLabel("Font size").selectOption("18");
-  await dialog.getByLabel("Tab size").selectOption("8");
-  await dialog.getByLabel("Show minimap").check();
-  await dialog.getByLabel("Wrap long lines").check();
-  await dialog.getByRole("button", { name: "Apply settings" }).click();
+  const editor = new EditorPage(page);
+  await editor.openSettings();
+  await editor.applySettings({
+    selects: {
+      Theme: "vs-light",
+      "Font size": 18,
+      "Tab size": 8,
+    },
+    checkboxes: {
+      "Show minimap": true,
+      "Wrap long lines": true,
+      "Auto-close brackets": false,
+    },
+  });
 
   const stored = await page.evaluate(() =>
     JSON.parse(localStorage.getItem("simulator-editor-preferences")),
@@ -73,7 +79,7 @@ test("persists validated settings without storing source authority", async ({
     tabSize: 8,
     minimap: true,
     wordWrap: true,
-    autoClosingBrackets: true,
+    autoClosingBrackets: false,
   });
   expect(stored).not.toHaveProperty("source");
   expect(stored).not.toHaveProperty("etag");
@@ -82,13 +88,14 @@ test("persists validated settings without storing source authority", async ({
   await page.getByRole("button", { name: "Reconnect to active session" }).click();
   await expect(page.getByText("Python editor ready. Changes stay in this local browser."))
     .toBeVisible();
-  await page.getByRole("button", { name: "Settings" }).click();
-  const restored = page.getByRole("dialog", { name: "Editor settings" });
+  await editor.openSettings();
+  const restored = editor.settingsDialog();
   await expect(restored.getByLabel("Theme")).toHaveValue("vs-light");
   await expect(restored.getByLabel("Font size")).toHaveValue("18");
   await expect(restored.getByLabel("Tab size")).toHaveValue("8");
   await expect(restored.getByLabel("Show minimap")).toBeChecked();
   await expect(restored.getByLabel("Wrap long lines")).toBeChecked();
+  await expect(restored.getByLabel("Auto-close brackets")).not.toBeChecked();
 
   await restored.getByLabel("Font size").evaluate((select) => {
     select.value = "99";
@@ -150,7 +157,7 @@ test("preserves edited Monaco text and dirty state when a worker fails", async (
       requests.push(request);
     }
   });
-  requestPolicy.delay("/api/source", 1000);
+  const sourceHeld = requestPolicy.hold("/api/source");
   requestPolicy.intercept("/api/source", {
     status: 503,
     contentType: "application/json",
@@ -159,6 +166,11 @@ test("preserves edited Monaco text and dirty state when a worker fails", async (
       ok: false,
       error: { code: "unavailable", message: "synthetic save failure" },
     }),
+  });
+  requestPolicy.expectHttpError({
+    method: "PUT",
+    path: "/api/source",
+    status: 503,
   });
   const saveRequest = page.waitForRequest(
     (request) =>
@@ -170,6 +182,7 @@ test("preserves edited Monaco text and dirty state when a worker fails", async (
   await page.keyboard.type(edit);
   await expect(page.locator(".sr-status")).toHaveText("Unsaved local edits");
   await saveRequest;
+  await sourceHeld;
   await page.evaluate(() => {
     globalThis.__failureWorker = globalThis.MonacoEnvironment.getWorker("", "python");
   });
@@ -177,6 +190,7 @@ test("preserves edited Monaco text and dirty state when a worker fails", async (
   await page.evaluate(() => {
     globalThis.__failureWorker.dispatchEvent(new ErrorEvent("error"));
   });
+  requestPolicy.release("/api/source");
   await expect(page.locator(".fallback")).toHaveValue(`${source}${edit}`);
   expect(requests).toHaveLength(1);
   await expect(page.locator(".header-meta")).toContainText("Unsaved local edits");

@@ -11,7 +11,7 @@ let requestPolicy;
 
 test.beforeEach(async ({ page }) => {
   harness = await startFixtureServer();
-  requestPolicy = installOfflineRequestPolicy(page, harness);
+  requestPolicy = await installOfflineRequestPolicy(page, harness);
 });
 
 test.afterEach(async () => {
@@ -131,6 +131,7 @@ test("roves levels and problem tabs with arrows and Home/End", async ({ page }) 
   );
   await page.keyboard.press("End");
   await expect(levelFour).toBeFocused();
+  await expect(page.locator(".prompt-copy")).toContainText("level4.md");
   await expectTabIndices(
     page.getByRole("navigation", { name: "Assessment levels" }).getByRole("button"),
     [-1, -1, -1, 0],
@@ -156,6 +157,9 @@ test("roves levels and problem tabs with arrows and Home/End", async ({ page }) 
   await page.keyboard.press("ArrowRight");
   await expect(history).toBeFocused();
   await expect(history).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".prompt-copy")).toHaveText(
+    "No saved candidate versions yet.",
+  );
   await expectTabIndices(page.getByRole("tab"), [-1, 0, -1, -1]);
   await page.keyboard.press("End");
   await expect(info).toBeFocused();
