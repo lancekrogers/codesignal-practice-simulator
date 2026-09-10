@@ -2,7 +2,7 @@
   "ASSET_PROVENANCE.txt": {
     "media_type": "text/plain; charset=utf-8",
     "cache_control": "no-store",
-    "sha256": "f5c436c29243becd8d76c5730cd9f80289d280508c9bb6771083f391f27c338e",
+    "sha256": "639b0e61c39a1b3653a2f7a98e376e9f05792a0d2389ebfc2be3579638458669",
     "size": 2257
   },
   "NOTICE.txt": {
@@ -11,23 +11,23 @@
     "sha256": "278342a849a42551f42a95478436883e326cf1fbc0133416307ec72d696845e4",
     "size": 95631
   },
-  "app-MLCSAGGU.js": {
+  "app-LLZ36CVA.js": {
     "media_type": "text/javascript; charset=utf-8",
     "cache_control": "public, max-age=31536000, immutable",
-    "sha256": "428bc69fed61afc9fb0fa11e666c00a8905af955946e6d954cef8c32c3a3308b",
-    "size": 2999415
+    "sha256": "3ffee998afedf87a8d4001a1a4ef6dbc5f4e8abd19ab52ed8fa5df041e3fd997",
+    "size": 3005410
   },
-  "app-VIFSYTLX.css": {
+  "app-QRCXFRU5.css": {
     "media_type": "text/css; charset=utf-8",
     "cache_control": "public, max-age=31536000, immutable",
-    "sha256": "61b68bb9dd46eb13a64e1600feb38a62858f7a4d24085b8ff60bce682dc5c07c",
-    "size": 105775
+    "sha256": "7aecbcf73bdddde7bffd2c76bb4c4b9fb6cb0d72912b97e83d50511b402f449c",
+    "size": 105945
   },
   "app.js": {
     "media_type": "text/javascript; charset=utf-8",
     "cache_control": "no-store",
-    "sha256": "428bc69fed61afc9fb0fa11e666c00a8905af955946e6d954cef8c32c3a3308b",
-    "size": 2999415
+    "sha256": "3ffee998afedf87a8d4001a1a4ef6dbc5f4e8abd19ab52ed8fa5df041e3fd997",
+    "size": 3005410
   },
   "codicon-KP4OV2OO.ttf": {
     "media_type": "font/ttf",
@@ -50,7 +50,7 @@
   "index.html": {
     "media_type": "text/html; charset=utf-8",
     "cache_control": "no-store",
-    "sha256": "43d1995d07bb18c1dcc59b9e51410ea597e1cff944040f46efaad86737367687",
+    "sha256": "4a4a5bc9c426d6284989abcf1b7852be4b270252f220d96f3d7c24e9d622f0b0",
     "size": 473
   },
   "language.worker-F67IIHMR.js": {

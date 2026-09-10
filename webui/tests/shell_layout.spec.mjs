@@ -102,6 +102,56 @@ test("keeps confirmation focus contained and restores the opener by keyboard", a
   await expect(start).toBeFocused();
 });
 
+test("renders a computed visible focus indicator for keyboard navigation", async ({
+  page,
+}) => {
+  await page.goto(`${harness.origin}/#token=${harness.token}`);
+  await expect(page.locator(".entry")).toBeVisible();
+  const start = page.getByRole("button", { name: "Start practice" });
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Tab");
+  await expect(start).toBeFocused();
+
+  const focus = await start.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      focusVisible: element.matches(":focus-visible"),
+      outlineOffset: style.outlineOffset,
+      outlineStyle: style.outlineStyle,
+      outlineWidth: style.outlineWidth,
+      shadow: style.boxShadow,
+    };
+  });
+  expect(focus).toEqual({
+    focusVisible: true,
+    outlineOffset: "2px",
+    outlineStyle: "solid",
+    outlineWidth: "2px",
+    shadow: expect.stringMatching(/\S/u),
+  });
+});
+
+test("honors reduced-motion preferences in computed shell styles", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto(`${harness.origin}/#token=${harness.token}`);
+  const start = page.getByRole("button", { name: "Start practice" });
+
+  expect(await start.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      animationDuration: style.animationDuration,
+      reduceEnabled: matchMedia("(prefers-reduced-motion: reduce)").matches,
+      scrollBehavior: style.scrollBehavior,
+      transitionDuration: style.transitionDuration,
+    };
+  })).toEqual({
+    animationDuration: "1e-05s",
+    reduceEnabled: true,
+    scrollBehavior: "auto",
+    transitionDuration: "1e-05s",
+  });
+});
+
 test("does not restore focus to a removed dialog opener", async ({ page }) => {
   await page.goto(`${harness.origin}/#token=${harness.token}`);
   const start = page.getByRole("button", { name: "Start practice" });

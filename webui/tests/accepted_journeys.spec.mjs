@@ -62,6 +62,73 @@ test("real server expiry locks every browser mutation", async ({ page }) => {
   await expect.poll(() => mutations.length).toBe(settledMutations);
 });
 
+test("expired attempt accepts one timeout submission and stays immutable", async ({
+  page,
+}) => {
+  await page.goto(`${harness.origin}/#token=${harness.token}`);
+  await page.clock.install();
+  const started = await startAttempt(page);
+  const attemptId = started.data.session.attempt_id;
+
+  await harness.setClock(started.data.session.deadline_at);
+  await page.clock.fastForward("31:00");
+  await expect(page.getByText("Expired", { exact: true })).toBeVisible();
+  for (const name of ["Save changes", "Run Tests", "Reset", "Submit"]) {
+    await expect(page.getByRole("button", { name })).toBeDisabled();
+  }
+
+  const first = await retrySubmit(page, harness, attemptId, started.data.source);
+  expect(first.status).toBe(200);
+  expect(first.document.data.newly_submitted).toBe(true);
+  expect(first.document.data.session.status).toBe("submitted");
+  expect(first.document.data.score).toEqual(first.document.data.session.score);
+  expect(await harness.scoreCalls()).toBe(1);
+  expect(await harness.attemptEvents(attemptId)).toEqual([
+    "started",
+    "expired",
+    "submitted",
+  ]);
+
+  const beforeRepeatContext = await harness.cliContext(attemptId);
+  const beforeRepeatStatus = await harness.readStatus(attemptId);
+  expect(beforeRepeatContext.lifecycle.status).toBe("submitted");
+  expect(beforeRepeatContext.score).toEqual(first.document.data.session.score);
+
+  const repeated = await retrySubmit(
+    page,
+    harness,
+    attemptId,
+    first.document.data.source,
+  );
+  expect(repeated.status).toBe(200);
+  expect(repeated.document.data.newly_submitted).toBe(false);
+  expect(repeated.document.data.session).toEqual(first.document.data.session);
+  expect(repeated.document.data.score).toEqual(first.document.data.score);
+  expect(repeated.document.data.source).toEqual(first.document.data.source);
+  expect(await harness.scoreCalls()).toBe(1);
+  expect(await harness.cliContext(attemptId)).toEqual(beforeRepeatContext);
+  expect(await harness.readStatus(attemptId)).toBe(beforeRepeatStatus);
+
+  await harness.restart();
+  requestPolicy.refreshOrigin();
+  await page.reload();
+  const viewFinal = page.getByRole("button", { name: "View final session" });
+  // Reload finishes before bootstrap resolves. Wait for either valid final
+  // presentation before deciding whether an explicit reconnect is required.
+  await expect.poll(async () =>
+    await viewFinal.isVisible() ||
+    await page.getByText("Submitted", { exact: true }).isVisible()
+  ).toBe(true);
+  if (await viewFinal.isVisible()) await viewFinal.click();
+  await expect(page.getByText("Submitted", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("output-drawer")).toContainText(
+    "Final result · Passed levels: 4 of 4.",
+  );
+  expect(await harness.scoreCalls()).toBe(1);
+  expect(await harness.cliContext(attemptId)).toEqual(beforeRepeatContext);
+  expect(await harness.readStatus(attemptId)).toBe(beforeRepeatStatus);
+});
+
 test("lost submit response recovers terminal state and retries idempotently", async ({
   page,
 }) => {

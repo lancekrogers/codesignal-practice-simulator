@@ -35,6 +35,42 @@ class TestWebServerSafety(WebServerTestCase):
         )
         self.assertEqual((status, document["error"]["code"]), (404, "session_unavailable"))
 
+    def test_invalid_utf8_and_symlinked_source_are_safe_http_failures(self) -> None:
+        attempt_id, _etag = self.start_attempt()
+        source = self.workspace / "attempts" / attempt_id / "simulation.py"
+        source.write_bytes(b"\xff")
+        status, _headers, document = self.request(
+            "GET", f"/api/source?attempt_id={attempt_id}"
+        )
+        self.assertEqual((status, document["error"]["code"]), (422, "invalid_input"))
+        self.assert_safe_source_failure(document)
+
+        external = self.workspace / "outside-source.py"
+        external.write_text("external sentinel\n", encoding="utf-8")
+        source.unlink()
+        source.symlink_to(external)
+        status, _headers, document = self.request(
+            "GET", f"/api/source?attempt_id={attempt_id}"
+        )
+        self.assertEqual((status, document["error"]["code"]), (404, "session_unavailable"))
+        self.assert_safe_source_failure(document)
+        self.assertEqual(external.read_text(encoding="utf-8"), "external sentinel\n")
+
+    def assert_safe_source_failure(self, document: object) -> None:
+        self.assertEqual(
+            document,
+            {
+                "schema_version": "web/v1",
+                "ok": False,
+                "error": {
+                    "code": document["error"]["code"],
+                    "message": "request values are invalid"
+                    if document["error"]["code"] == "invalid_input"
+                    else "selected session is unavailable",
+                },
+            },
+        )
+
     def test_expected_client_disconnects_are_suppressed_but_other_oserrors_raise(
         self,
     ) -> None:

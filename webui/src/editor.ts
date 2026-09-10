@@ -1,5 +1,6 @@
 import * as monaco from "monaco-editor/editor/editor.api";
 import { conf, language } from "monaco-editor/languages/definitions/python/python";
+import "monaco-editor/editor/contrib/bracketMatching/browser/bracketMatching";
 import "monaco-editor/editor/contrib/cursorUndo/browser/cursorUndo";
 import "monaco-editor/editor/contrib/find/browser/findController";
 import "monaco-editor/editor/contrib/folding/browser/folding";
