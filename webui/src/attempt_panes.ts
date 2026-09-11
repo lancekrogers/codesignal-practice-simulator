@@ -17,8 +17,12 @@ export function createHeader(state: AttemptState): HeaderElements & HTMLElement 
   const header = element("header", "assessment-header");
   const titleGroup = createTitleGroup(state);
   const meta = createHeaderMeta(state);
+  const leaveButton = button("Back to start", "secondary");
+  leaveButton.dataset.enabled = "true";
+  titleGroup.prepend(leaveButton);
   header.append(titleGroup, meta.container);
   return Object.assign(header, {
+    leaveButton,
     timer: meta.timer,
     connection: meta.connection,
     saveState: meta.saveState,

@@ -12,6 +12,7 @@ export type ShellCallbacks = {
   onLevelNavigate(direction: "previous" | "next" | "skip"): void;
   onPromptTab(tab: PromptTab): void;
   onSave(): void;
+  onLeave(opener: HTMLElement): void;
   onRunTests(opener: HTMLElement): void;
   onSubmit(opener: HTMLElement): void;
   onRestore(snapshotId: string, opener: HTMLElement): void;
@@ -66,6 +67,7 @@ export type ShellElements = {
 };
 
 export type HeaderElements = {
+  leaveButton: HTMLButtonElement;
   timer: HTMLElement;
   connection: HTMLElement;
   saveState: HTMLElement;

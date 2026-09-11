@@ -187,6 +187,17 @@ There is no pause, extension, or browser-side reset. At the deadline, the
 browser becomes read-only and its **Submit** button is disabled. Its source and
 stored results remain viewable.
 
+Use **Back to start** in the assessment header to leave the test view. For an
+active attempt, confirm the warning: the timer keeps running, saved changes are
+kept, and unsaved local edits are discarded. Cancel and save first if needed.
+Reconnect from the start page to continue the same attempt. Returning from a
+submitted or expired attempt needs no confirmation and does not change its result.
+Wait for an in-flight save, test, or submission to finish before leaving.
+
+Ctrl-C stops the local server; additional Ctrl-C presses during cleanup are
+ignored until its listener and connections are released. Stopping the server
+does not pause or submit an attempt.
+
 The browser UI and direct CLI are two transports for the same attempt. Keep
 the web server running in one terminal, then use a second terminal for safe
 state inspection or the CLI fallback after the browser starts an attempt:

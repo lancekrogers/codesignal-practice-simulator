@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, Protocol, TextIO
@@ -326,7 +328,16 @@ def _execute_web(
         )
         return int(ExitCode.INVALID_INPUT)
     finally:
-        server.stop()
+        # A second Ctrl-C must not interrupt shutdown and leave a traceback or
+        # partially released listener. Signal handlers are main-thread only.
+        if threading.current_thread() is threading.main_thread():
+            previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+            try:
+                server.stop()
+            finally:
+                signal.signal(signal.SIGINT, previous)
+        else:
+            server.stop()
 
 
 def _serialize_document(

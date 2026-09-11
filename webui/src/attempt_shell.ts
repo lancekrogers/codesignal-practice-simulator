@@ -60,6 +60,7 @@ function createShellParts(
   const prompt = createPromptPane(state, callbacks.onPromptTab);
   const header = createHeader(state);
   header.saveButton.addEventListener("click", callbacks.onSave);
+  header.leaveButton.addEventListener("click", () => callbacks.onLeave(header.leaveButton));
   return {
     header,
     levelNav,
@@ -112,6 +113,7 @@ function collectControls(parts: ShellParts): HTMLButtonElement[] {
     ...parts.actions.buttons,
     parts.header.saveButton,
     parts.header.settingsButton,
+    parts.header.leaveButton,
   ];
 }
 

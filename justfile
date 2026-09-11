@@ -27,6 +27,7 @@ setup: (app::setup python)
 fetch: (app::fetch workspace)
 
 # Launch the local web app and open the browser; accepts web CLI flags.
+[continue]
 [positional-arguments]
 dev *args:
     #!/usr/bin/env bash

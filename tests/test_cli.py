@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -207,6 +208,28 @@ class RecordingWebServer:
 
 
 class CliTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "POSIX SIGINT delivery")
+    def test_web_cleanup_ignores_repeated_interrupts_and_restores_handler(self) -> None:
+        original = signal.getsignal(signal.SIGINT)
+
+        class InterruptedServer(RecordingWebServer):
+            def wait(self):
+                raise KeyboardInterrupt
+
+            def stop(self):
+                os.kill(os.getpid(), signal.SIGINT)
+                os.kill(os.getpid(), signal.SIGINT)
+                super().stop()
+
+        server = InterruptedServer(None)
+        code = cli.execute(
+            ["web", "--no-open"], output=io.StringIO(),
+            web_server_factory=lambda _config: server,
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(server.stopped)
+        self.assertEqual(signal.getsignal(signal.SIGINT), original)
+
     def execute(
         self,
         arguments: list[str],

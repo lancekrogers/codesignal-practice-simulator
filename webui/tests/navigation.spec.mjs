@@ -255,6 +255,95 @@ test("guards prompt races and disposes the prompt cache on refresh", async ({
     .toHaveLength(2);
 });
 
+test("can cancel leaving, return to start, and reconnect without resetting the attempt", async ({ page }) => {
+  await startAttempt(page);
+  const attemptId = await page.locator("main").getAttribute("data-attempt-id");
+  const deadline = await page.locator(".server-deadline").innerText();
+  await appendSource(page, "# saved-before-leaving");
+  await expect(page.locator(".assessment-header .header-status").nth(1).locator("strong"))
+    .toHaveText("Saved snapshot");
+  await page.getByRole("button", { name: "Level 3: Level 3" }).click();
+  await expectPrompt(page, 3);
+  const mutations = [];
+  page.on("request", (request) => {
+    if (["POST", "PUT"].includes(request.method())) mutations.push(request.method());
+  });
+  await page.getByRole("button", { name: "Back to start" }).click();
+  const dialog = page.getByRole("dialog", { name: "Leave assessment?" });
+  await expect(dialog).toContainText("The timer keeps running");
+  await expect(dialog).toContainText("unsaved local edits will be lost");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByRole("button", { name: "Back to start" })).toBeFocused();
+  await expect(page.locator(".view-lines")).toContainText("# saved-before-leaving");
+  await page.getByRole("button", { name: "Back to start" }).click();
+  await dialog.getByRole("button", { name: "Leave assessment", exact: true }).click();
+  await page.getByRole("button", { name: "Reconnect to active session" }).click();
+  await expect(page.locator("main")).toHaveAttribute("data-attempt-id", attemptId);
+  await expect(page.locator(".server-deadline")).toHaveText(deadline);
+  await expect(page.locator(".view-lines")).toContainText("# saved-before-leaving");
+  await expect(page.getByRole("button", { name: "Level 3: Level 3" }))
+    .toHaveAttribute("aria-current", "step");
+  expect(mutations).toHaveLength(0);
+});
+
+test("cancel preserves a failed-save buffer and leaving requires explicit discard confirmation", async ({ page }) => {
+  await startAttempt(page);
+  requestPolicy.intercept("/api/source", {
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({
+      schema_version: "web/v1", ok: false,
+      error: { code: "temporary_failure", message: "temporary save failure" },
+    }),
+  });
+  requestPolicy.expectHttpError({ method: "PUT", path: "/api/source", status: 503 });
+  await appendSource(page, "# unsaved-exit-marker");
+  await expect(page.locator(".assessment-header .header-status").nth(1).locator("strong"))
+    .toHaveText("Save failed — retry");
+  await page.getByRole("button", { name: "Back to start" }).click();
+  const dialog = page.getByRole("dialog", { name: "Leave assessment?" });
+  await expect(dialog).toContainText("unsaved local edits will be lost");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.locator(".view-lines")).toContainText("# unsaved-exit-marker");
+  requestPolicy.clearIntercept("/api/source");
+  await page.getByRole("button", { name: "Back to start" }).click();
+  await dialog.getByRole("button", { name: "Leave assessment", exact: true }).click();
+  await page.getByRole("button", { name: "Reconnect to active session" }).click();
+  await expect(page.getByText("Python editor ready.", { exact: false })).toBeVisible();
+  await expect(page.locator(".view-lines")).not.toContainText("# unsaved-exit-marker");
+});
+
+test("waits for an in-flight save before leaving", async ({ page }) => {
+  await startAttempt(page);
+  const held = requestPolicy.hold("/api/source");
+  await appendSource(page, "# pending-exit-marker");
+  await held;
+  await page.getByRole("button", { name: "Back to start" }).click();
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  await expect(page.getByText("Wait for the current operation to finish before leaving.", { exact: true })).toBeVisible();
+  requestPolicy.release("/api/source");
+  await expect(page.locator(".assessment-header .header-status").nth(1).locator("strong"))
+    .toHaveText("Saved snapshot");
+  await page.getByRole("button", { name: "Back to start" }).click();
+  await expect(page.getByRole("dialog", { name: "Leave assessment?" })).toBeVisible();
+});
+
+test("can return to start after submission without another confirmation or mutation", async ({ page }) => {
+  await startAttempt(page);
+  await page.getByRole("button", { name: "Submit", exact: true }).click();
+  await page.getByRole("button", { name: "Submit attempt", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Submit", exact: true })).toBeDisabled();
+  await expect(page.getByRole("textbox", { name: "Read-only Python source fallback" })).toBeVisible();
+  const mutations = [];
+  page.on("request", (request) => {
+    if (["POST", "PUT"].includes(request.method())) mutations.push(request.method());
+  });
+  await page.getByRole("button", { name: "Back to start" }).click();
+  await expect(page.getByRole("button", { name: "Start practice", exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  expect(mutations).toHaveLength(0);
+});
+
 async function startAttempt(page) {
   await page.goto(`${harness.origin}/#token=${harness.token}`);
   await page.getByRole("button", { name: "Start practice" }).click();
