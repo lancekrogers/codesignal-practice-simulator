@@ -46,6 +46,29 @@ selects the interpreter across modules. Quote paths containing spaces.
 The longer installation and verification prerequisites below still apply;
 neither Node nor npm is needed just to launch the bundled app.
 
+## How this was built
+
+The browser app was built through **Festival Methodology**, in festival
+**CB0001 — codesignal-browser-assessment-simulator**, completed September 10,
+2026. The work extended the existing Python CLI and scoring engine rather than
+creating a separate browser-only simulator.
+
+The festival organized the build into six phases: requirements intake,
+architecture and planning, the shared application backend, the assessment IDE,
+browser verification, and release review. Work moved through the `fest next`
+loop, with task completion, testing, review, and traceable commits. Cursor agents
+handled implementation and independent architecture, security, and UI reviews;
+review findings fed back into fixes before release.
+
+The result pairs a Python loopback server with a locally bundled TypeScript UI
+and Monaco editor. The browser and CLI share one server-authoritative attempt
+lifecycle. Verification covered unit and HTTP tests, real Playwright browser
+journeys, offline operation, and installed Python packages.
+
+This animation records the completed festival's progress, not an assessment run:
+
+![CB0001 build progress across six phases, finishing at 100% completion](docs/assets/codesignal-browser-assessment-simulator-CB0001.gif)
+
 ## Install, runtime, and FETCH_ONLY setup
 
 Python 3.10+ is required and the simulator has no Python runtime dependencies.
