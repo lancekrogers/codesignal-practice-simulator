@@ -14,8 +14,9 @@ sys.path.insert(0, str(PROJECT / "src"))
 class DocumentationTests(unittest.TestCase):
     def test_readme_documents_the_session_based_cli_without_requiring_just(self) -> None:
         readme = (PROJECT / "README.md").read_text(encoding="utf-8")
-        normalized_readme = " ".join(readme.split())
 
+        self.assertIn("codesignal-browser-assessment-simulator-CB0001.gif", readme)
+        self.assertIn("How this was built", readme)
         self.assertIn("`attempts/<uuid>/session.json`", readme)
         self.assertIn("codesignal-sim fetch --workspace-root", readme)
         self.assertIn("codesignal-sim start --workspace-root", readme)
@@ -23,18 +24,8 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn("Just recipes are optional shortcuts", readme)
         self.assertIn("`full-90m`", readme)
         self.assertIn("`drill-30m`", readme)
-        self.assertIn("canonical lowercase UUID takes precedence", readme)
         self.assertIn("python3 scripts/run_legacy_checks.py", readme)
         self.assertIn("It does not run the fetched\nupstream compatibility test.", readme)
-        self.assertIn("0 (success), 2", readme)
-        self.assertIn(
-            "exits 5 only when `test` ran and one or more groups were non-passing",
-            normalized_readme,
-        )
-        self.assertIn(
-            "`submit` always exits 0 when it successfully finalizes",
-            normalized_readme,
-        )
         self.assertNotIn("attempt.json", readme)
         self.assertNotIn("`just level", readme)
         self.assertNotIn("`just score`", readme)
@@ -61,6 +52,7 @@ class DocumentationTests(unittest.TestCase):
             self.assertIn(exit_code, contract)
         self.assertIn("cli/v1", contract)
         self.assertIn("takes precedence over the active pointer", contract)
+        self.assertIn("canonical,\nlowercase UUID", contract)
         self.assertIn("Return the exact stored result; no scoring", contract)
         self.assertIn(
             "every successfully finalized `submit`, even when stored groups failed or errored",
@@ -128,12 +120,12 @@ class DocumentationTests(unittest.TestCase):
         template = (PROJECT / "src/codesignal_practice_simulator/workspace.py").read_text(
             encoding="utf-8"
         )
+        readme = (PROJECT / "README.md").read_text(encoding="utf-8")
         surfaces = {
             "root policy": (PROJECT / "AGENTS.md").read_text(encoding="utf-8"),
             "safety guide": (PROJECT / "docs" / "agent-safety.md").read_text(
                 encoding="utf-8"
             ),
-            "readme": (PROJECT / "README.md").read_text(encoding="utf-8"),
             "attempt template": template,
         }
         required = (
@@ -160,9 +152,10 @@ class DocumentationTests(unittest.TestCase):
                     self.assertIn(phrase.lower(), normalized)
                 self.assertIn("not a security sandbox", normalized)
 
-        self.assertIn("browser ui", surfaces["readme"].lower())
-        self.assertIn("direct cli", surfaces["readme"].lower())
-        self.assertIn("timer, scoring, and lifecycle", surfaces["readme"].lower())
+        self.assertIn("docs/agent-safety.md", readme)
+        self.assertIn("browser ui", readme.lower())
+        self.assertIn("direct cli", readme.lower())
+        self.assertIn("timer, scoring, and lifecycle", readme.lower())
         self.assertIn("post-attempt", surfaces["safety guide"].lower())
 
     def test_operating_docs_cover_browser_release_and_recovery_boundaries(self) -> None:
@@ -177,32 +170,38 @@ class DocumentationTests(unittest.TestCase):
             self.assertIn("private", normalized_document)
             self.assertIn("per-launch capability", normalized_document)
 
+        pyproject = (PROJECT / "pyproject.toml").read_text(encoding="utf-8")
+        frontend_check = (PROJECT / ".justfiles" / "check.just").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("pip install --no-index --no-deps", readme)
-        install_section = readme.split("## Install, runtime, and FETCH_ONLY setup", 1)[1]
-        quick_start = install_section.split("```sh", 1)[1].split("```", 1)[0]
-        self.assertIn("pip install --no-deps -e .", quick_start)
-        self.assertNotIn("--no-build-isolation", quick_start)
-        self.assertIn("does **not** run a TypeScript type checker", readme)
+        install_section = readme.split("## Install", 1)[1]
+        install_block = install_section.split("```sh", 1)[1].split("```", 1)[0]
+        self.assertIn("pip install --no-deps -e .", install_block)
+        self.assertNotIn("--no-build-isolation", install_block)
+        self.assertIn("not TypeScript checking", frontend_check)
+        self.assertIn("install:browser", frontend_check)
         self.assertIn("no Python runtime dependencies", readme)
         self.assertIn("does not include pinned fixtures", readme)
         self.assertIn("Confirm and start", readme)
         self.assertIn("There is no pause", readme)
         self.assertIn("browser becomes read-only", readme)
         self.assertIn("CLI remains the explicit fallback", readme)
-        self.assertIn("compare-and-swap revision", readme)
-        self.assertIn("Candidate-only,\nbounded history", readme)
-        self.assertIn("Troubleshooting and scoped cleanup", readme)
+        self.assertIn("Troubleshooting", readme)
         self.assertIn("official hidden tests", " ".join(readme.split()))
-        self.assertIn("X-Simulator-Token", readme)
-        self.assertIn("not an `Authorization` header", readme)
+        self.assertIn("X-Simulator-Token", contract)
+        self.assertIn(
+            "not an `Authorization` header",
+            " ".join(contract.split()),
+        )
         self.assertIn("captured request diagnostics", contract)
         self.assertIn("pinned paths and hashes, but never fixture bytes", readme)
         self.assertIn('submit --workspace-root "$workspace"', readme)
         self.assertIn('submit --workspace-root "$workspace"', safety)
-        self.assertIn("setuptools>=61", readme)
-        self.assertIn("build>=1.2", readme)
-        self.assertIn("npm --prefix webui run install:browser", readme)
+        self.assertIn("setuptools>=61", pyproject)
+        self.assertIn("build>=1.2", pyproject)
         self.assertIn("compare-and-swap revisions (ETags)", contract)
+        self.assertIn("Candidate-only history is bounded", contract)
         self.assertIn("**Submit** is disabled", contract)
         self.assertIn("explicit permission", safety)
         self.assertIn("not a security sandbox", policy)
