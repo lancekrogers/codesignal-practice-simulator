@@ -18,12 +18,43 @@ export function shellCallbacks(runtime: AttemptRuntime): ShellCallbacks {
     onLevelNavigate: (direction) => navigateLevel(runtime, direction),
     onPromptTab: (tab) => runtime.prompt?.selectTab(tab),
     onSave: () => retrySave(runtime),
+    onLeave: (opener) => leaveAttempt(runtime, opener),
     onRunTests: (opener) => runTests(runtime, opener),
     onSubmit: (opener) => confirmSubmit(runtime, opener),
     onRestore: (snapshotId, opener) =>
       restoreSnapshot(runtime, snapshotId, opener),
     onReset: (opener) => resetSnapshot(runtime, opener),
   };
+}
+
+function leaveAttempt(runtime: AttemptRuntime, opener: HTMLElement): void {
+  if (runtime.disposed) return;
+  if (runtime.operation.busy || runtime.source?.state.status === "saving") {
+    runtime.elements.announce("Wait for the current operation to finish before leaving.");
+    return;
+  }
+  const leave = (): void => {
+    if (runtime.disposed) return;
+    if (runtime.operation.busy || runtime.source?.state.status === "saving") {
+      runtime.elements.announce("Wait for the current operation to finish before leaving.");
+      return;
+    }
+    runtime.cleanup();
+    // Bootstrap reloads the selected session without changing its lifecycle.
+    // Retain the non-secret view fragment so reconnect restores the selected tab.
+    window.location.reload();
+  };
+  if (runtime.state.session.status !== "active") {
+    leave();
+    return;
+  }
+  runtime.elements.confirmAction(
+    "Leave assessment?",
+    "Return to the start page without submitting. The timer keeps running; you can reconnect to this attempt. Saved changes are kept. Any unsaved local edits will be lost; cancel and save first if needed.",
+    "Leave assessment",
+    opener,
+    leave,
+  );
 }
 
 function selectLevel(runtime: AttemptRuntime, level: number): void {

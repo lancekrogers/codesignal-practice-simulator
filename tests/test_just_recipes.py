@@ -108,11 +108,19 @@ class JustRecipeTests(unittest.TestCase):
         self.assertEqual(result.stdout, "")
 
     @unittest.skipUnless(os.name == "posix", "POSIX launcher shutdown check")
-    def test_dev_serves_real_bundled_app_and_stops_on_interrupt(self) -> None:
+    def test_dev_serves_real_bundled_app_and_stops_on_repeated_interrupts(self) -> None:
         executable = self.write_executable(
             "real simulator", "import sys\n"
             f"sys.path.insert(0, {str(PROJECT / 'src')!r})\n"
             "from codesignal_practice_simulator.cli import main\n"
+            "from codesignal_practice_simulator.web.server import WebServer\n"
+            "import os, signal\n"
+            "original_stop = WebServer.stop\n"
+            "def interrupted_stop(server):\n"
+            "    os.kill(os.getpid(), signal.SIGINT)\n"
+            "    os.kill(os.getpid(), signal.SIGINT)\n"
+            "    original_stop(server)\n"
+            "WebServer.stop = interrupted_stop\n"
             "raise SystemExit(main())\n",
         )
         process = subprocess.Popen(
@@ -134,8 +142,11 @@ class JustRecipeTests(unittest.TestCase):
             self.assertFalse((self.root / "attempts").exists())
             self.assertFalse((self.root / ".cache").exists())
             os.killpg(process.pid, signal.SIGINT)
-            process.communicate(timeout=10)
-            self.assertIn(process.returncode, (0, 130))
+            _, stderr = process.communicate(timeout=10)
+            self.assertEqual(process.returncode, 0)
+            self.assertNotIn("Traceback", stderr)
+            self.assertNotIn("KeyboardInterrupt", stderr)
+            self.assertNotIn("terminated by signal", stderr)
             with self.assertRaises(urllib.error.URLError):
                 opener.open(f"http://127.0.0.1:{port}/", timeout=1)
         finally:
