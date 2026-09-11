@@ -5,6 +5,47 @@ browser for the interactive assessment and the CLI for an equivalent local
 transport, automation, and recovery. Both use the same attempt.
 Just recipes are optional shortcuts.
 
+## Quick start with Just
+
+From the project directory (tested with Just 1.58):
+
+```sh
+just setup                 # Install the editable Python app
+just fetch                 # Explicit, pinned assessment download
+just dev                   # Launch the web app and open its local browser URL
+just dev --no-open         # Print the private URL without opening a browser
+just dev --port 8000       # Choose a port instead of the default available port
+```
+
+`just dev` serves the bundled UI through the existing Python loopback server.
+It does not start an assessment, fetch fixtures, install dependencies, or run
+study checks. Confirming **Start practice** in the UI starts the timer. Stop
+the server with Ctrl-C. Keep the printed capability URL private.
+
+The root command list stays small; documented modules live in `.justfiles/`,
+following the camp pattern. Run `just`, `just app`, `just build`, `just check`,
+or `just study` to see each menu:
+
+- `just app practice`, `just app drill 600`, `just app status`: CLI attempts.
+- `just build deps`, then `just build assets`: install the locked frontend
+  toolchain and rebuild assets after UI edits. Refresh the page afterward;
+  there is no hot reload. Python changes require restarting `just dev`.
+- `just verify`: the unchanged canonical verification sequence.
+- `just check browser-install`, `just check browser`, `just check wheel`:
+  explicit browser setup, synthetic browser tests, and installed-wheel checks.
+- `just study`: explicit post-attempt commands, separate from development.
+
+Existing flat CLI/study recipes still work as hidden compatibility shortcuts.
+For another workspace, use `SIMULATOR_WORKSPACE=/path/to/workspace just dev`
+(the same environment variable applies to `fetch` and `app` commands), or
+`just workspace=/path/to/workspace dev`. Root `python=...` overrides are
+forwarded by `setup` and `verify`; module overrides use Just's qualified form,
+for example `just check::python=.venv/bin/python check unit`. `PYTHON` also
+selects the interpreter across modules. Quote paths containing spaces.
+
+The longer installation and verification prerequisites below still apply;
+neither Node nor npm is needed just to launch the bundled app.
+
 ## Install, runtime, and FETCH_ONLY setup
 
 Python 3.10+ is required and the simulator has no Python runtime dependencies.
