@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from .errors import InvalidInputError
-from .models import DRILL_PROFILE, FULL_PROFILE, AssessmentMetadata
+from .models import DRILL_PROFILE, FULL_PROFILE, AssessmentMetadata, PinnedAssessment
+
+
+CONTENT_IDENTITY_SCHEMA_VERSION = "assessment-content/v1"
+# The isolated runner loads test_simulation.TestSimulateCodingFramework.test_group_N
+# for N in 1..4 (scoring.py bootstrap). Content pinned to another contract is not
+# scorable by this release.
+RUNNER_CONTRACT = "unittest-groups-v1"
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +31,7 @@ class AssessmentDefinition:
     test_filename: str
     level_groups: tuple[int, ...]
     profile_ids: frozenset[str]
+    runner_contract: str = RUNNER_CONTRACT
 
     def __post_init__(self) -> None:
         if not self.cache_directory or self.cache_directory.startswith("/"):
@@ -36,6 +49,8 @@ class AssessmentDefinition:
             raise InvalidInputError("assessment test filename is invalid")
         if self.profile_ids != frozenset((FULL_PROFILE, DRILL_PROFILE)):
             raise InvalidInputError("assessment profiles are invalid")
+        if self.runner_contract != RUNNER_CONTRACT:
+            raise InvalidInputError("assessment runner contract is unsupported")
 
     @property
     def copied_filenames(self) -> tuple[str, ...]:
@@ -53,6 +68,48 @@ class AssessmentDefinition:
         return profile_id in self.profile_ids
 
 
+def content_identity(
+    definition: AssessmentDefinition,
+    *,
+    content_version: str,
+    file_hashes: Mapping[str, str],
+) -> PinnedAssessment:
+    """Pin one definition to declared hashes of its copied candidate-facing files.
+
+    The digest covers the assessment ID, content version, runner contract, and
+    each copied file's declared SHA-256. Callers supply hashes that were (or will
+    be) verified against actual bytes; this function never reads files itself.
+    """
+    if not isinstance(file_hashes, Mapping) or set(file_hashes) != set(
+        definition.copied_filenames
+    ):
+        raise InvalidInputError("content identity requires every copied file hash")
+    if any(
+        not isinstance(digest, str) or not _SHA256.fullmatch(digest)
+        for digest in file_hashes.values()
+    ):
+        raise InvalidInputError("content identity file hashes are invalid")
+    document = {
+        "schema_version": CONTENT_IDENTITY_SCHEMA_VERSION,
+        "assessment_id": definition.metadata.assessment_id,
+        "content_version": content_version,
+        "runner_contract": definition.runner_contract,
+        "files": [
+            {"path": name, "sha256": file_hashes[name]} for name in sorted(file_hashes)
+        ],
+    }
+    encoded = json.dumps(
+        document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return PinnedAssessment(
+        assessment_id=definition.metadata.assessment_id,
+        display_name=definition.metadata.display_name,
+        content_version=content_version,
+        content_digest=hashlib.sha256(encoded).hexdigest(),
+        level_count=definition.metadata.level_count,
+    )
+
+
 FILE_STORAGE = AssessmentDefinition(
     metadata=AssessmentMetadata("file_storage", "File Storage"),
     cache_directory="assessment/file_storage",
@@ -61,6 +118,7 @@ FILE_STORAGE = AssessmentDefinition(
     test_filename="test_simulation.py",
     level_groups=(1, 2, 3, 4),
     profile_ids=frozenset((FULL_PROFILE, DRILL_PROFILE)),
+    runner_contract=RUNNER_CONTRACT,
 )
 
 
@@ -91,6 +149,9 @@ DEFAULT_ASSESSMENT_REGISTRY = AssessmentRegistry((FILE_STORAGE,))
 __all__ = [
     "AssessmentDefinition",
     "AssessmentRegistry",
+    "CONTENT_IDENTITY_SCHEMA_VERSION",
     "DEFAULT_ASSESSMENT_REGISTRY",
     "FILE_STORAGE",
+    "RUNNER_CONTRACT",
+    "content_identity",
 ]

@@ -12,10 +12,14 @@ from .assessments import (
     AssessmentDefinition,
     DEFAULT_ASSESSMENT_REGISTRY,
 )
+from .candidate_document_storage import read_source, safe_candidate_path
 from .candidate_documents import (
     CandidateDocument,
+    CandidateDocumentError,
+    CandidateDocumentReadOnlyError,
     CandidateDocumentService,
     SourceHistory,
+    etag_for,
 )
 from .clock import Clock, UTCClock
 from .errors import (
@@ -31,7 +35,7 @@ from .evaluation import EvaluationService
 from .filesystem import Filesystem, LocalFilesystem
 from .fixture_setup import FixtureSetupError, populate_runtime_fixture
 from .lifecycle import LifecycleService, Scorer, SubmissionResult, TimeObservation
-from .models import ScoreSummary, SessionState
+from .models import ACTIVE, SUBMITTED, ScoreSummary, SessionRecord
 from .persistence import Persistence
 from .prompts import PromptResult, PromptService
 from .rendering import AttemptContextService, ContextResult, DerivedStatusService
@@ -50,7 +54,7 @@ ScorerFactory = Callable[[AssessmentDefinition], Scorer]
 class EvaluationSnapshot:
     """One immutable web evaluation view assembled inside the action boundary."""
 
-    state: SessionState
+    state: SessionRecord
     time: TimeObservation
     source: CandidateDocument
     practice: PracticeResult | None = None
@@ -138,7 +142,7 @@ class RuntimeApplication:
         assessment: str,
         mode: Literal["full", "drill"],
         drill_duration_seconds: int | None,
-    ) -> SessionState:
+    ) -> SessionRecord:
         with self._action_lock:
             return self._start_locked(assessment, mode, drill_duration_seconds)
 
@@ -174,7 +178,7 @@ class RuntimeApplication:
     def bootstrap(self) -> dict[str, object]:
         """Return browser entry metadata and the currently selected session."""
         with self._action_lock:
-            selected: SessionState | None = None
+            selected: SessionRecord | None = None
             selected_time: TimeObservation | None = None
             pointer = self.workspace.persistence.read_active_pointer(
                 self.workspace.attempts_directory
@@ -213,13 +217,13 @@ class RuntimeApplication:
             },
             }
 
-    def resume(self, *, attempt_id: str | None) -> SessionState:
+    def resume(self, *, attempt_id: str | None) -> SessionRecord:
         with self._action_lock:
             state = self.lifecycle.resume(attempt_id)
             self._refresh_derived_status(state.attempt_id)
             return state
 
-    def status(self, *, attempt_id: str | None) -> SessionState:
+    def status(self, *, attempt_id: str | None) -> SessionRecord:
         with self._action_lock:
             state = self.lifecycle.status(attempt_id)
             self._refresh_derived_status(state.attempt_id)
@@ -274,7 +278,7 @@ class RuntimeApplication:
         attempt_id: str | None,
         source_content: str | None = None,
         if_match: str | None = None,
-    ) -> SessionState:
+    ) -> SessionRecord:
         with self._action_lock:
             return self._test_locked(attempt_id, source_content, if_match)
 
@@ -327,7 +331,7 @@ class RuntimeApplication:
         attempt_id: str | None,
         source_content: str | None,
         if_match: str | None,
-    ) -> SessionState:
+    ) -> SessionRecord:
         self._save_before_evaluation(attempt_id, source_content, if_match)
         try:
             state = self.evaluation.test(attempt_id)
@@ -347,7 +351,7 @@ class RuntimeApplication:
         drill_duration_seconds: int | None,
         *,
         web_start: bool = False,
-    ) -> SessionState:
+    ) -> SessionRecord:
         definition = self.registry.require(assessment)
         # ``create_attempt`` validates the same complete cache again immediately
         # before it creates any workspace path, closing the validation-to-write gap.
@@ -392,7 +396,7 @@ class RuntimeApplication:
 
     def _evaluation_snapshot_locked(
         self,
-        state: SessionState,
+        state: SessionRecord,
         *,
         practice: PracticeResult | None = None,
         newly_submitted: bool = False,
@@ -408,7 +412,7 @@ class RuntimeApplication:
             newly_submitted=newly_submitted,
         )
 
-    def _practice_for_state(self, state: SessionState) -> PracticeResult | None:
+    def _practice_for_state(self, state: SessionRecord) -> PracticeResult | None:
         if state.score is None:
             return None
         return self._practice_results.get(state.attempt_id) or practice_result_from_score(
@@ -425,13 +429,50 @@ class RuntimeApplication:
             return
         if source_content is None or if_match is None:
             raise InvalidInputError("source content and If-Match must be supplied together")
-        if self.status(attempt_id=attempt_id).status != "active":
+        status = self.status(attempt_id=attempt_id).status
+        if status == ACTIVE:
+            self.save_source(
+                attempt_id=attempt_id,
+                content=source_content,
+                if_match=if_match,
+            )
             return
-        self.save_source(
-            attempt_id=attempt_id,
-            content=source_content,
-            if_match=if_match,
-        )
+        if status == SUBMITTED:
+            # A repeat request returns the committed result. The payload is never
+            # applied, so it cannot replace the immutable submitted source.
+            return
+        self._reject_terminal_source_mutation(attempt_id, source_content)
+
+    def _reject_terminal_source_mutation(
+        self, attempt_id: str | None, source_content: str
+    ) -> None:
+        """Refuse a payload that would change an expired or abandoned attempt.
+
+        Silently dropping it hid real edits (D002). A payload identical to the
+        saved source is not a mutation, so an expired submit still finalizes the
+        saved revision.
+        """
+        if self.status(attempt_id=attempt_id).status == SUBMITTED:
+            # Another writer finalized between the observation above and here; a
+            # repeat request returns the committed result rather than an error.
+            return
+        try:
+            saved = self._saved_source_digest(attempt_id)
+            supplied = etag_for(source_content)
+        except CandidateDocumentError:
+            saved, supplied = None, ""
+        if saved is None or saved != supplied:
+            raise CandidateDocumentReadOnlyError(
+                "candidate source is read-only after expiry or submission"
+            )
+
+    def _saved_source_digest(self, attempt_id: str | None) -> str | None:
+        """Read the saved source without creating baselines or history."""
+        with self.workspace.selected_attempt(attempt_id) as attempt:
+            state = self.workspace.persistence.read_session(attempt)
+            definition = self.workspace.definition_for_persisted_session(state)
+            path = safe_candidate_path(attempt, definition.candidate_filename)
+            return etag_for(read_source(self.workspace.filesystem, path))
 
     def context(
         self,

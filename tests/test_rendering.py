@@ -84,7 +84,7 @@ def make_cache(root: Path) -> ValidatedFixtureCache:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
         hashes[relative] = hashlib.sha256(content).hexdigest()
-    return ValidatedFixtureCache(cache, hashes)
+    return ValidatedFixtureCache(cache, hashes, content_version="upstream-0000000")
 
 
 def tree_bytes(root: Path) -> dict[str, bytes]:

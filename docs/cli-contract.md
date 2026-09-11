@@ -7,7 +7,11 @@ files, and the active pointer are never session authority.
 
 ## State schemas
 
-`session.json` uses schema version `session/v1` and contains:
+`session.json` uses schema version `session/v2` for attempts created by this
+release and `session/v1` for attempts created before it. Both are read; each
+attempt keeps writing the version it was created with, and no read upgrades a
+record on disk. An older release cannot read `session/v2`, so running mixed
+versions against one workspace is unsupported. Both versions contain:
 
 - `attempt_id`: canonical UUID;
 - `assessment`: its lowercase identifier, display name, and `level_count` of
@@ -22,11 +26,26 @@ files, and the active pointer are never session authority.
 - `submitted_at`, which is absent except on a submitted session. A submitted
   session always has both this UTC timestamp and a score.
 
+`session/v2` additionally pins the content its attempt was created from and
+identifies the review it published:
+
+- `assessment` also carries `content_version` and `content_digest`, computed at
+  creation from the packaged manifest's declared file hashes plus the runner
+  contract, and verified against the staged copies before the attempt exists.
+  Continuing or scoring the attempt requires that same installed content;
+  stored results stay readable when it is gone.
+- `status` may also be `abandoned`, with `abandonment` metadata;
+- `review_digest` on a submitted session names its `review.json` record.
+
+`session/v1` records carry no content identity. Nothing infers one for them
+from today's registry.
+
 Every score contains results for levels 1 through 4, in order. Each result is
 `passed`, `failed`, or `error`; `passed_levels` and
 `highest_contiguous_level` are stored and must match those results.
 
-Each `events.jsonl` record uses `event/v1`, a canonical UUID event ID and
+Each `events.jsonl` record uses the schema family of its session (`event/v1`
+or `event/v2`), a canonical UUID event ID and
 attempt ID, a non-negative state revision, a UTC timestamp, a lowercase event
 name, an outcome (`succeeded`, `rejected`, or `recovered`), and JSON-safe
 command arguments. `attempts/active.json` uses `active-pointer/v1` and
@@ -34,14 +53,33 @@ contains only its selected canonical attempt ID. It is a selector, not
 session authority.
 
 Before publishing a scored submission, persistence writes an attempt-owned
-`.submission-recovery.json` record containing the exact prior and submitted
-`session/v1` states plus its exact `event/v1` record. While that marker exists,
-any selected-attempt access accepts only the saved prior or submitted state,
-then finishes the event and marker sequence under the attempt lock without
-rerunning the scorer.
+`.submission-recovery.json` record (`submission-recovery/v1` or `/v2`, matching
+the session) containing the exact prior and submitted states, the exact event,
+and the immutable review record. While that marker exists, any selected-attempt
+access accepts only the saved prior or submitted state, then publishes the
+review, state, event, and marker sequence under the attempt lock without
+rerunning the scorer. A review already on disk must be byte-identical to the
+recorded one; a difference is corruption and fails closed rather than being
+overwritten.
 Recovery rejects duplicate event IDs or a conflicting submitted event instead
 of manufacturing another submission. A completed repeat `submit` has no marker
 and is byte-identical: it does not score or write.
+
+## Submission review record
+
+A submission publishes `review.json` (`review/v1`) once and never rewrites it.
+It records the attempt and state revision, the score, the profile and
+timestamps, the assessment as stored, and `content_identity`, which is `pinned`
+only for a `session/v2` attempt and otherwise `unavailable`. Its `source` holds
+the exact scored bytes with their digest.
+
+The submitted bytes are read, scored, and re-read under one attempt lock. If
+the source changed while the scorer ran, nothing is committed and the command
+reports exit 4 so it can be retried. If the source could not be read at all,
+the submission still finalizes and `source` is null: absence is recorded, never
+guessed. A `session/v1` attempt submitted by this release therefore has bound
+source bytes with no content identity, while one submitted by an older release
+has no review record at all.
 
 ## Lifecycle and expiry
 
@@ -188,7 +226,13 @@ the browser preserves local text and requires an explicit choice to reload the
 server version or copy the local version after refreshing its revision.
 Candidate-only history is bounded and supports explicit reset and restore.
 
-Final (`expired` or `submitted`) sessions reject source mutation. Source and
+Final (`expired` or `submitted`) sessions reject source mutation. A `test` or
+`submit` request that carries source content for an expired or abandoned
+attempt is refused as read-only (exit 4; HTTP 423) instead of being silently
+dropped, and nothing is written. Content identical to the saved source is not
+a mutation: it is ignored, and an expired `submit` still finalizes the saved
+revision once. A request against an already submitted attempt returns the
+committed result whatever it carries, and never saves or rescores. Source and
 history ownership still belongs to the candidate: an agent must ask explicit
 permission before reading either and separately before editing source. Browser
 or CLI access does not grant permission to inspect fixtures, copied tests,

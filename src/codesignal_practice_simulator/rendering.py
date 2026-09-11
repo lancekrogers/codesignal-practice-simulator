@@ -15,7 +15,17 @@ from uuid import uuid4
 
 from .errors import SessionUnavailableError
 from .filesystem import Filesystem, LocalFilesystem
-from .models import ACTIVE, EXPIRED, SUBMITTED, EventRecord, SessionState
+from .models import (
+    ACTIVE,
+    EXPIRED,
+    SUBMITTED,
+    EventRecord,
+    EventRecordUnion,
+    EventRecordV2,
+    SessionRecord,
+    SessionState,
+    SessionStateV2,
+)
 from .workspace import WorkspaceManager
 
 
@@ -28,18 +38,18 @@ SESSION_UNAVAILABLE_MESSAGE = "session unavailable"
 class AttemptContext:
     """The narrow, non-authoritative data allowed in a live-session view."""
 
-    state: SessionState
-    events: tuple[EventRecord, ...]
+    state: SessionRecord
+    events: tuple[EventRecordUnion, ...]
 
     def __post_init__(self) -> None:
-        if not isinstance(self.state, SessionState):
+        if not isinstance(self.state, (SessionState, SessionStateV2)):
             _unavailable()
         if not isinstance(self.events, tuple) or not self.events:
             _unavailable()
 
         revisions: set[int] = set()
         for event in self.events:
-            if not isinstance(event, EventRecord):
+            if not isinstance(event, (EventRecord, EventRecordV2)):
                 _unavailable()
             if event.attempt_id != self.state.attempt_id:
                 _unavailable()
@@ -84,7 +94,12 @@ class AttemptContextService:
     ) -> ContextResult:
         with self.workspace.selected_attempt(attempt_id) as attempt:
             context = load_attempt_context(attempt, self.workspace.persistence)
-            self.workspace.definition_for_persisted_session(context.state)
+            if isinstance(context.state, SessionState):
+                # Legacy records hold only metadata, so the registry remains
+                # their integrity reference. A pinned v2 record is
+                # self-describing: this read-only view must not require its
+                # content version to still be installed.
+                self.workspace.definition_for_persisted_session(context.state)
         return ContextResult(context=context, output_format=output_format)
 
 
@@ -258,7 +273,7 @@ def _context_document(context: AttemptContext) -> dict[str, object]:
     }
 
 
-def _score_document(state: SessionState) -> dict[str, object]:
+def _score_document(state: SessionRecord) -> dict[str, object]:
     if state.score is None:
         return {
             "levels": [],
@@ -268,7 +283,7 @@ def _score_document(state: SessionState) -> dict[str, object]:
     return state.score.to_dict()
 
 
-def _next_legal_commands(state: SessionState) -> list[str]:
+def _next_legal_commands(state: SessionRecord) -> list[str]:
     prefix = "codesignal-sim"
     selected = f"--attempt {state.attempt_id}"
     commands = [

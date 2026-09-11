@@ -69,7 +69,7 @@ def make_cache(root: Path) -> ValidatedFixtureCache:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         hashes[relative] = hashlib.sha256(data).hexdigest()
-    return ValidatedFixtureCache(cache, hashes)
+    return ValidatedFixtureCache(cache, hashes, content_version="upstream-0000000")
 
 
 class ApplicationCompositionTests(unittest.TestCase):

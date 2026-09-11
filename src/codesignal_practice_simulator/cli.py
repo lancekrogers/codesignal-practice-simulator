@@ -25,7 +25,7 @@ from .errors import (
     InvalidInputError,
 )
 from .lifecycle import SubmissionResult, TimeObservation
-from .models import SessionState
+from .models import SessionState, SessionStateV2
 from .rendering import ContextResult
 from .web.server import WebServer, WebServerConfig
 
@@ -211,7 +211,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def serialize_result(result: object) -> Mapping[str, object]:
     """Convert supported typed service results to JSON-safe result documents."""
-    if isinstance(result, SessionState):
+    if isinstance(result, (SessionState, SessionStateV2)):
         return {"session": result.to_dict()}
     if isinstance(result, TimeObservation):
         return {

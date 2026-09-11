@@ -44,6 +44,7 @@ from codesignal_practice_simulator.persistence import (
 )
 from codesignal_practice_simulator.scoring import IsolatedAttemptScorer
 from codesignal_practice_simulator.workspace import CACHE_INPUTS, ValidatedFixtureCache
+from tests.workspace_test_support import submitted_with_review
 
 
 CANONICAL_ATTEMPT = "123e4567-e89b-12d3-a456-426614174000"
@@ -129,7 +130,7 @@ def synthetic_runtime_fixture() -> tuple[dict[str, object], dict[str, bytes]]:
     return (
         {
             "fixture_cache_root": ".cache/codesignal-fixtures/synthetic",
-            "upstream": {"repository": "example/fixtures", "commit": "offline"},
+            "upstream": {"repository": "example/fixtures", "commit": "0ff11e0"},
             "fetches": [
                 {
                     "upstream_path": upstream_path,
@@ -504,6 +505,7 @@ class RuntimeCliTests(unittest.TestCase):
                 for path in self.cache.rglob("*")
                 if path.is_file()
             },
+            content_version="upstream-0000000",
         )
 
     def tearDown(self) -> None:
@@ -612,7 +614,7 @@ class RuntimeCliTests(unittest.TestCase):
                 self.assertIn("codesignal-sim fetch", document["error"]["message"])  # type: ignore[index]
                 self.assertFalse((workspace / "attempts").exists())
 
-    def test_unregistered_persisted_assessment_is_corrupt_in_json_and_human_output(self) -> None:
+    def test_uninstalled_pinned_assessment_is_unavailable_in_json_and_human_output(self) -> None:
         started = self.session(
             self.execute(["start", "--workspace-root", str(self.workspace), "--json"])[1]
         )
@@ -627,7 +629,8 @@ class RuntimeCliTests(unittest.TestCase):
         self.assertEqual(code, 3)
         self.assertEqual(document["error"]["code"], "session_unavailable")  # type: ignore[index]
         self.assertEqual(
-            document["error"]["message"], "selected attempt assessment is not registered"  # type: ignore[index]
+            document["error"]["message"],  # type: ignore[index]
+            "attempt content version is not installed; stored results remain reviewable",
         )
 
         output = io.StringIO()
@@ -640,7 +643,7 @@ class RuntimeCliTests(unittest.TestCase):
         self.assertEqual(
             output.getvalue(),
             "[cli/v1] error (session_unavailable): "
-            "selected attempt assessment is not registered\n",
+            "attempt content version is not installed; stored results remain reviewable\n",
         )
         self.assertNotIn("Traceback", output.getvalue())
 
@@ -750,12 +753,10 @@ class RuntimeCliTests(unittest.TestCase):
         attempt = self.workspace / "attempts" / started["attempt_id"]  # type: ignore[operator]
         adapter = self.runtime_application(self.workspace)
         state = adapter.workspace.persistence.read_session(attempt)
-        submitted = replace(
+        submitted, _review = submitted_with_review(
             state,
-            status=SUBMITTED,
-            revision=1,
-            score=ScoreSummary(tuple(LevelResult(level, "passed") for level in range(1, 5))),
-            submitted_at=START,
+            ScoreSummary(tuple(LevelResult(level, "passed") for level in range(1, 5))),
+            START,
         )
         adapter.workspace.persistence.write_session(attempt, submitted)
         before = file_bytes(attempt)

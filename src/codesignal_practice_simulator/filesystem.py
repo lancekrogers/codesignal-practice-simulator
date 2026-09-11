@@ -20,6 +20,9 @@ class Filesystem(Protocol):
     def read_bytes(self, path: Path) -> bytes:
         """Read a file's bytes."""
 
+    def read_bytes_limited(self, path: Path, limit: int) -> bytes:
+        """Read at most limit + 1 bytes so callers can reject oversized records."""
+
     def write_bytes(self, path: Path, data: bytes) -> None:
         """Write complete bytes to an already-created file path."""
 
@@ -56,6 +59,10 @@ class LocalFilesystem:
 
     def read_bytes(self, path: Path) -> bytes:
         return path.read_bytes()
+
+    def read_bytes_limited(self, path: Path, limit: int) -> bytes:
+        with path.open("rb") as stream:
+            return stream.read(limit + 1)
 
     def write_bytes(self, path: Path, data: bytes) -> None:
         with path.open("wb") as stream:

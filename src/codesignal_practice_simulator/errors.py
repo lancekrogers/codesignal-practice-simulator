@@ -30,6 +30,10 @@ class InvalidInputError(DomainError):
     exit_code = ExitCode.INVALID_INPUT
 
 
+class UnsupportedSchemaVersionError(InvalidInputError):
+    """A persisted or supplied schema_version is not supported by this release."""
+
+
 class SessionUnavailableError(DomainError):
     """The selected session is absent or cannot be read."""
 
@@ -44,6 +48,14 @@ class FixtureSetupRequiredError(SessionUnavailableError):
     """The required immutable fixture cache is absent or invalid."""
 
 
+class AssessmentVersionUnavailableError(SessionUnavailableError):
+    """An attempt's pinned content version is not the installed definition."""
+
+
+class ReviewPendingError(SessionUnavailableError):
+    """A review read observed a changing or unfinished record; retry it."""
+
+
 class IllegalLifecycleError(DomainError):
     """The requested command is not allowed in the session's lifecycle state."""
 
@@ -52,6 +64,10 @@ class IllegalLifecycleError(DomainError):
 
 class LockUnavailableError(IllegalLifecycleError):
     """A concurrent writer owns the required session or workspace lock."""
+
+
+class ScoredSourceChangedError(IllegalLifecycleError):
+    """Candidate source changed while it was being scored; nothing was committed."""
 
 
 class CandidateFailureError(DomainError):

@@ -42,6 +42,7 @@ class WebServerTestCase(unittest.TestCase):
                 for path in cache.rglob("*")
                 if path.is_file()
             },
+            content_version="upstream-0000000",
         )
         score = ScoreSummary(tuple(LevelResult(level, "failed") for level in range(1, 5)))
         self.application = RuntimeApplication(

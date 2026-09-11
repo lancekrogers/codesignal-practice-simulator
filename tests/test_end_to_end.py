@@ -434,7 +434,7 @@ class EndToEndTests(unittest.TestCase):
         payloads = {upstream_path: data for upstream_path, _cache_path, data in records}
         manifest: dict[str, object] = {
             "fixture_cache_root": ".cache/codesignal-fixtures/synthetic",
-            "upstream": {"repository": "offline/example", "commit": "synthetic"},
+            "upstream": {"repository": "offline/example", "commit": "5e7e7e7"},
             "fetches": [
                 {
                     "upstream_path": upstream_path,

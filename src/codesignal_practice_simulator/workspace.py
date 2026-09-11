@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -16,12 +17,22 @@ from .assessments import (
 )
 from .candidate_documents import write_initial_source_baseline
 from .errors import (
+    AssessmentVersionUnavailableError,
+    FixtureSetupRequiredError,
     InvalidInputError,
     SessionCorruptError,
     SessionUnavailableError,
 )
 from .filesystem import Filesystem, LocalFilesystem
-from .models import ACTIVE_POINTER_SCHEMA_VERSION, ActivePointer, SessionState
+from .models import (
+    ACTIVE_POINTER_SCHEMA_VERSION,
+    ActivePointer,
+    AssessmentMetadata,
+    PinnedAssessment,
+    SessionRecord,
+    SessionState,
+    SessionStateV2,
+)
 from .persistence import ACTIVE_FILENAME, Persistence, initial_event
 from .scoring import install_attempt_runner
 from .workspace_cache import CACHE_INPUTS, ValidatedFixtureCache
@@ -113,9 +124,20 @@ class WorkspaceManager:
         """Return the only safe root for workspace-owned mutations."""
         return self._validated_attempts_directory()
 
+    def pinned_assessment(self, assessment: AssessmentMetadata) -> PinnedAssessment:
+        """Return the content identity a new attempt of ``assessment`` must pin."""
+        if not isinstance(assessment, AssessmentMetadata):
+            raise InvalidInputError("assessment is invalid")
+        definition = self.registry.require(assessment.assessment_id)
+        if assessment != definition.metadata:
+            raise InvalidInputError(
+                "assessment metadata does not match its registry entry"
+            )
+        return self.cache.pinned_assessment(definition)
+
     def create_attempt(
         self,
-        state: SessionState,
+        state: SessionRecord,
         *,
         interrupt_after_publish: bool = False,
         before_publish: Callable[[Path, ActivePointer | None], None] | None = None,
@@ -133,19 +155,34 @@ class WorkspaceManager:
                 before_publish=before_publish,
             )
 
-    def _validate_creation_state(self, state: SessionState) -> None:
-        definition = self.registry.require(state.assessment.assessment_id)
-        if state.assessment != definition.metadata:
-            raise InvalidInputError(
-                "assessment metadata does not match its registry entry"
-            )
+    def _validate_creation_state(self, state: SessionRecord) -> None:
+        """Validate either schema; LifecycleService creates only session/v2.
+
+        session/v1 creation remains for callers that stage legacy fixtures. A v2
+        identity must equal the one computed from this manifest, so callers
+        cannot pin content that the staged bytes were not verified against.
+        """
+        if isinstance(state, SessionStateV2):
+            definition = self.registry.require(state.assessment.assessment_id)
+            if state.assessment != self.cache.pinned_assessment(definition):
+                raise InvalidInputError(
+                    "assessment identity does not match the installed content"
+                )
+        elif isinstance(state, SessionState):
+            definition = self.registry.require(state.assessment.assessment_id)
+            if state.assessment != definition.metadata:
+                raise InvalidInputError(
+                    "assessment metadata does not match its registry entry"
+                )
+        else:
+            raise InvalidInputError("session is invalid")
         if not definition.supports_profile(state.profile.profile_id):
             raise InvalidInputError("assessment does not support the selected profile")
 
     def _create_attempt_locked(
         self,
         attempts: Path,
-        state: SessionState,
+        state: SessionRecord,
         *,
         interrupt_after_publish: bool,
         before_publish: Callable[[Path, ActivePointer | None], None] | None,
@@ -274,15 +311,16 @@ class WorkspaceManager:
         return attempt
 
     def definition_for_persisted_session(
-        self, state: SessionState
+        self, state: SessionRecord
     ) -> AssessmentDefinition:
         """Validate persisted registry references before a caller uses them.
 
         Registry lookup failures caused by saved session data are corruption,
         not invalid command input.  Keeping this conversion at the workspace
         boundary makes every lifecycle command report the same safe exit.
+        Read-only review and history must not depend on this lookup.
         """
-        if not isinstance(state, SessionState):
+        if not isinstance(state, (SessionState, SessionStateV2)):
             raise SessionCorruptError("selected attempt has an invalid session")
         return self._definition_for_persisted_session(state)
 
@@ -308,8 +346,12 @@ class WorkspaceManager:
         return attempts
 
     def _definition_for_persisted_session(
-        self, state: SessionState
+        self, state: SessionRecord
     ) -> AssessmentDefinition:
+        if isinstance(state, SessionStateV2):
+            return self._definition_for_pinned_session(state)
+        # Legacy identity adapter: session/v1 recorded only metadata, so it is
+        # matched against today's definition and never given a content version.
         try:
             definition = self.registry.require(state.assessment.assessment_id)
         except InvalidInputError as error:
@@ -326,7 +368,29 @@ class WorkspaceManager:
             )
         return definition
 
-    def _populate_staging(self, staging: Path, state: SessionState, token: str) -> None:
+    def _definition_for_pinned_session(
+        self, state: SessionStateV2
+    ) -> AssessmentDefinition:
+        """Require the installed definition to be the exact content the attempt pinned."""
+        unavailable = (
+            "attempt content version is not installed; "
+            "stored results remain reviewable"
+        )
+        try:
+            definition = self.registry.require(state.assessment.assessment_id)
+        except InvalidInputError as error:
+            raise AssessmentVersionUnavailableError(unavailable) from error
+        installed = self.cache.pinned_assessment(definition)
+        if (
+            state.assessment.content_version != installed.content_version
+            or state.assessment.content_digest != installed.content_digest
+            or state.assessment.level_count != installed.level_count
+            or not definition.supports_profile(state.profile.profile_id)
+        ):
+            raise AssessmentVersionUnavailableError(unavailable)
+        return definition
+
+    def _populate_staging(self, staging: Path, state: SessionRecord, token: str) -> None:
         definition = self.registry.require(state.assessment.assessment_id)
         source_directory = self.cache.root.joinpath(
             *definition.cache_directory.split("/")
@@ -334,6 +398,7 @@ class WorkspaceManager:
         with self.persistence.attempt_lock(staging):
             for filename in definition.copied_filenames:
                 self.filesystem.copyfile(source_directory / filename, staging / filename)
+            self._verify_staged_inputs(staging, definition)
             write_initial_source_baseline(
                 self.filesystem,
                 self.persistence,
@@ -374,6 +439,31 @@ class WorkspaceManager:
                 )
                 + "\n",
             )
+
+    def _verify_staged_inputs(
+        self, staging: Path, definition: AssessmentDefinition
+    ) -> None:
+        """Prove staged copies are the declared bytes an identity describes.
+
+        The cache was validated before staging, but it can change before the
+        copy. Checking the transaction-owned copies closes that gap for this
+        attempt; a mismatch aborts creation through the normal rollback.
+        """
+        for filename in definition.copied_filenames:
+            expected = self.cache.declared_hash(definition, filename)
+            try:
+                actual = hashlib.sha256(
+                    self.filesystem.read_bytes(staging / filename)
+                ).hexdigest()
+            except OSError as error:
+                raise FixtureSetupRequiredError(
+                    f"fixture setup is required: cannot verify staged {filename}"
+                ) from error
+            if actual != expected:
+                raise FixtureSetupRequiredError(
+                    "fixture setup is required: staged input does not match "
+                    f"its declared hash: {filename}"
+                )
 
     def _write_flushed(self, path: Path, text: str) -> None:
         self.filesystem.write_bytes(path, text.encode("utf-8"))

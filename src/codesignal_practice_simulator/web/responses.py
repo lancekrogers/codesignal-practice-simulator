@@ -9,7 +9,7 @@ from typing import Mapping
 from ..candidate_document_models import CandidateDocument, SourceHistory
 from ..evaluation_results import PracticeResult
 from ..lifecycle import TimeObservation
-from ..models import ScoreSummary, SessionState
+from ..models import ScoreSummary, SessionRecord
 
 
 WEB_SCHEMA_VERSION = "web/v1"
@@ -71,7 +71,7 @@ def encode(response: HttpResponse) -> bytes:
     return body
 
 
-def session_document(state: SessionState) -> dict[str, object]:
+def session_document(state: SessionRecord) -> dict[str, object]:
     return {"session": state.to_dict()}
 
 
@@ -106,7 +106,7 @@ def history_document(history: SourceHistory) -> dict[str, object]:
 
 
 def evaluation_document(
-    state: SessionState,
+    state: SessionRecord,
     observation: TimeObservation,
     source: CandidateDocument,
     *,
