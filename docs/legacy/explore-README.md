@@ -3,7 +3,7 @@
 > This preserves the pre-CLI document for provenance, historical layout, and
 > compatibility context. Its scripts, timestamp-named attempts, and Just
 > commands are retired and unsupported. For a timed attempt, use the supported
-> [CLI workflow](../../README.md#timed-workflow) and
+> [CLI workflow](../../README.md#practice) and
 > [canonical CLI contract](../cli-contract.md).
 
 # CodeSignal Industry Coding Framework — file_storage
