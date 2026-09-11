@@ -76,28 +76,29 @@ class DocumentationTests(unittest.TestCase):
 
     def test_just_recipes_are_optional_cli_shortcuts_and_verify_the_project(self) -> None:
         justfile = (PROJECT / "justfile").read_text(encoding="utf-8")
-        practice = (PROJECT / "justfiles" / "practice.just").read_text(encoding="utf-8")
-        verify = (PROJECT / "justfiles" / "verify.just").read_text(encoding="utf-8")
+        practice = (PROJECT / ".justfiles" / "app.just").read_text(encoding="utf-8")
+        verify = (PROJECT / ".justfiles" / "check.just").read_text(encoding="utf-8")
+        study = (PROJECT / ".justfiles" / "study.just").read_text(encoding="utf-8")
+        config = (PROJECT / ".justfiles" / "config.just").read_text(encoding="utf-8")
 
-        self.assertIn("simulator :=", justfile)
-        self.assertIn("codesignal-sim", justfile)
-        self.assertIn("{{simulator}} start", practice)
-        self.assertIn("{{simulator}} task", practice)
-        self.assertIn("{{simulator}} test", practice)
-        self.assertIn("{{simulator}} submit", practice)
-        self.assertIn("{{simulator}} context", practice)
+        self.assertIn("simulator :=", config)
+        self.assertIn("codesignal-sim", config)
+        self.assertIn("mod app", justfile)
+        self.assertIn("dev *args:", justfile)
+        for command in ("start", "task", "test", "submit", "context"):
+            self.assertIn("{{simulator}}' " + command, practice)
         self.assertIn("only this recipe returns exit 5", practice)
         self.assertNotIn("new_attempt.py", practice)
         self.assertNotIn("scorecard.py", practice)
-        self.assertIn("verify:", verify)
-        self.assertIn("python3 scripts/run_legacy_checks.py", verify)
+        self.assertIn("verify interpreter=python:", verify)
+        self.assertIn("'{{interpreter}}' scripts/run_legacy_checks.py", verify)
         self.assertIn("unittest discover -s tests -v", verify)
         self.assertIn("unittest tests.test_end_to_end -v", verify)
         self.assertIn("git diff --check", verify)
-        self.assertIn("test-compat:", verify)
-        self.assertIn("study-stages:", verify)
-        self.assertIn("study-check", verify)
-        self.assertIn("Deprecated post-attempt compatibility", verify)
+        self.assertIn("compat:", study)
+        self.assertIn("stages:", study)
+        self.assertIn("check level file:", study)
+        self.assertIn("Deprecated post-attempt compatibility", study)
 
     def test_agent_and_legacy_documents_preserve_live_attempt_boundaries(self) -> None:
         policy = (PROJECT / "AGENTS.md").read_text(encoding="utf-8")
@@ -177,7 +178,8 @@ class DocumentationTests(unittest.TestCase):
             self.assertIn("per-launch capability", normalized_document)
 
         self.assertIn("pip install --no-index --no-deps", readme)
-        quick_start = readme.split("```sh", 1)[1].split("```", 1)[0]
+        install_section = readme.split("## Install, runtime, and FETCH_ONLY setup", 1)[1]
+        quick_start = install_section.split("```sh", 1)[1].split("```", 1)[0]
         self.assertIn("pip install --no-deps -e .", quick_start)
         self.assertNotIn("--no-build-isolation", quick_start)
         self.assertIn("does **not** run a TypeScript type checker", readme)
