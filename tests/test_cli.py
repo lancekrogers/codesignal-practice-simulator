@@ -263,6 +263,8 @@ class CliTests(unittest.TestCase):
                 "task",
                 "test",
                 "submit",
+                "abandon",
+                "restart",
                 "context",
                 "web",
             },
@@ -274,6 +276,12 @@ class CliTests(unittest.TestCase):
                 self.assertNotIn("--attempt", options)
             else:
                 self.assertIn("--attempt", options)
+            if name in ("abandon", "restart"):
+                self.assertIn("--expected-revision", options)
+        restart_options = {
+            option for action in commands["restart"]._actions for option in action.option_strings
+        }
+        self.assertTrue({"--operation-id", "--mode", "--drill-duration-seconds"} <= restart_options)
         context_options = {
             option for action in commands["context"]._actions for option in action.option_strings
         }
@@ -564,6 +572,22 @@ class RuntimeCliTests(unittest.TestCase):
         self.assertEqual(full["deadline_at"], "2026-09-08T20:30:00+00:00")
         full_attempt = self.workspace / "attempts" / full["attempt_id"]  # type: ignore[operator]
 
+        # A plain start never displaces a live selected attempt (D001); ending
+        # the full attempt explicitly is the resolution that lets a drill begin.
+        code, ended = self.execute(
+            [
+                "abandon",
+                "--workspace-root",
+                str(self.workspace),
+                "--expected-revision",
+                "0",
+                "--json",
+            ]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(self.session(ended)["status"], "abandoned")
+        self.assertTrue(ended["result"]["newly_abandoned"])  # type: ignore[index]
+
         code, drill_document = self.execute(
             [
                 "start",
@@ -657,6 +681,17 @@ class RuntimeCliTests(unittest.TestCase):
         first = self.session(
             self.execute(["start", "--workspace-root", str(self.workspace), "--json"])[1]
         )
+        code, _ended = self.execute(
+            [
+                "abandon",
+                "--workspace-root",
+                str(self.workspace),
+                "--expected-revision",
+                "0",
+                "--json",
+            ]
+        )
+        self.assertEqual(code, 0)
         second = self.session(
             self.execute(["start", "--workspace-root", str(self.workspace), "--json"])[1]
         )
@@ -974,9 +1009,13 @@ class RuntimeCliTests(unittest.TestCase):
             return code, json.loads(output.getvalue())
 
         started = self.session(invoke(["start"])[1])
-        _neighbor = self.session(invoke(["start"])[1])
+        # A live neighbor is created through the unguarded primitive: the CLI
+        # start refuses to displace the live selected attempt.
+        _neighbor = application.lifecycle.start(
+            application.registry.require("file_storage").metadata
+        )
         attempt = self.workspace / "attempts" / started["attempt_id"]  # type: ignore[operator]
-        neighbor = self.workspace / "attempts" / _neighbor["attempt_id"]  # type: ignore[operator]
+        neighbor = self.workspace / "attempts" / _neighbor.attempt_id
         candidate_before = (attempt / "simulation.py").read_bytes()
         neighbor_before = file_bytes(neighbor)
         cache_before = file_bytes(self.cache)

@@ -747,8 +747,16 @@ def evaluate(group):
 
         workspace = self._workspace("selection-and-tail")
         self._fetch("console", workspace)
-        first_id, first = self._start("console", workspace)
+        # A plain start never displaces a live selected attempt (D001): the
+        # neighbor is started first and ended explicitly, then the attempt under
+        # test starts. The ended neighbor must stay byte-identical throughout.
         _second_id, second = self._start("console", workspace)
+        ended = self._run("console", workspace, "abandon", "--expected-revision", "0")
+        assert isinstance(ended, subprocess.CompletedProcess)
+        self.assertEqual(
+            self._document(ended, 0)["result"]["session"]["status"], "abandoned"  # type: ignore[index]
+        )
+        first_id, first = self._start("console", workspace)
         second_before = _bytes_under(second, ignored_names={".session.lock"})
         pointer = workspace / "attempts" / "active.json"
         pointer.write_text("{bad", encoding="utf-8")

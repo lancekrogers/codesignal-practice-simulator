@@ -34,7 +34,14 @@ from .evaluation_results import (
 from .evaluation import EvaluationService
 from .filesystem import Filesystem, LocalFilesystem
 from .fixture_setup import FixtureSetupError, populate_runtime_fixture
-from .lifecycle import LifecycleService, Scorer, SubmissionResult, TimeObservation
+from .lifecycle import (
+    AbandonResult,
+    LifecycleService,
+    RestartResult,
+    Scorer,
+    SubmissionResult,
+    TimeObservation,
+)
 from .models import ACTIVE, SUBMITTED, ScoreSummary, SessionRecord
 from .persistence import Persistence
 from .prompts import PromptResult, PromptService
@@ -165,15 +172,42 @@ class RuntimeApplication:
         mode: Literal["full", "drill"],
         drill_duration_seconds: int | None,
     ) -> EvaluationSnapshot:
-        """Create the browser attempt under the live-selection guard."""
+        """Create the browser attempt and return its complete initial view."""
         with self._action_lock:
-            state = self._start_locked(
-                assessment,
-                mode,
-                drill_duration_seconds,
-                web_start=True,
-            )
+            state = self._start_locked(assessment, mode, drill_duration_seconds)
             return self._evaluation_snapshot_locked(state)
+
+    def abandon(self, *, attempt_id: str | None, expected_revision: int) -> AbandonResult:
+        """End the selected attempt explicitly; shared by CLI and web."""
+        with self._action_lock:
+            result = self.lifecycle.abandon(
+                attempt_id, expected_revision=expected_revision
+            )
+            self._refresh_derived_status(result.state.attempt_id)
+            return result
+
+    def restart(
+        self,
+        *,
+        attempt_id: str | None,
+        operation_id: str,
+        expected_revision: int,
+        mode: Literal["full", "drill"] | None = None,
+        drill_duration_seconds: int | None = None,
+    ) -> RestartResult:
+        """Abandon the selected attempt and create its replacement; shared by CLI and web."""
+        with self._action_lock:
+            result = self.lifecycle.restart(
+                attempt_id,
+                operation_id=operation_id,
+                expected_revision=expected_revision,
+                mode=mode,
+                drill_duration_seconds=drill_duration_seconds,
+            )
+            if not result.replayed:
+                self._refresh_derived_status(result.old_attempt_id)
+                self._refresh_derived_status(result.replacement_attempt_id)
+            return result
 
     def bootstrap(self) -> dict[str, object]:
         """Return browser entry metadata and the currently selected session."""
@@ -349,8 +383,6 @@ class RuntimeApplication:
         assessment: str,
         mode: Literal["full", "drill"],
         drill_duration_seconds: int | None,
-        *,
-        web_start: bool = False,
     ) -> SessionRecord:
         definition = self.registry.require(assessment)
         # ``create_attempt`` validates the same complete cache again immediately
@@ -363,8 +395,9 @@ class RuntimeApplication:
                 "`codesignal-sim fetch --workspace-root "
                 f"{self.workspace.workspace_root}`"
             ) from error
-        starter = self.lifecycle.start_web if web_start else self.lifecycle.start
-        state = starter(
+        # CLI and browser share one policy: a selected live attempt is never
+        # replaced silently by a plain start (D001).
+        state = self.lifecycle.start_exclusive(
             definition.metadata,
             mode=mode,  # type: ignore[arg-type]
             drill_duration_seconds=drill_duration_seconds,

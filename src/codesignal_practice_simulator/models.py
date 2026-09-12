@@ -32,6 +32,12 @@ CONTENT_IDENTITY_UNAVAILABLE = "unavailable"
 ACTIVE_POINTER_SCHEMA_VERSION = "active-pointer/v1"
 SUBMISSION_RECOVERY_SCHEMA_VERSION = "submission-recovery/v1"
 SUBMISSION_RECOVERY_SCHEMA_VERSION_V2 = "submission-recovery/v2"
+RESTART_REQUEST_SCHEMA_VERSION = "restart-request/v1"
+RESTART_JOURNAL_SCHEMA_VERSION = "restart-journal/v1"
+RESTART_COMPLETION_SCHEMA_VERSION = "restart-completion/v1"
+ABANDONMENT_RECOVERY_SCHEMA_VERSION = "abandonment-recovery/v1"
+RESTART_REASON = "restarted"
+END_REASON = "ended"
 
 FULL_MODE = "full"
 DRILL_MODE = "drill"
@@ -501,11 +507,19 @@ class AdaptedSessionRecord:
 
 @dataclass(frozen=True, slots=True)
 class SessionStateV2:
-    """The authoritative versioned lifecycle state for one v2 attempt."""
+    """The authoritative versioned lifecycle state for one v2 attempt.
+
+    ``assessment`` is a PinnedAssessment for every attempt created by this
+    release. The one other shape is the explicit legacy identity: a session/v1
+    attempt that an explicit abandonment upgraded keeps its stored
+    AssessmentMetadata and records ``content_identity: unavailable``. That
+    variant exists only in the abandoned state and never gains a content
+    version or digest.
+    """
 
     schema_version: str
     attempt_id: str
-    assessment: PinnedAssessment
+    assessment: PinnedAssessment | AssessmentMetadata
     profile: ModeProfile
     started_at: datetime
     deadline_at: datetime
@@ -516,12 +530,27 @@ class SessionStateV2:
     abandonment: AbandonmentMetadata | None = None
     review_digest: str | None = None
 
+    @property
+    def content_identity(self) -> str:
+        return (
+            CONTENT_IDENTITY_PINNED
+            if isinstance(self.assessment, PinnedAssessment)
+            else CONTENT_IDENTITY_UNAVAILABLE
+        )
+
     def __post_init__(self) -> None:
         if self.schema_version != SESSION_SCHEMA_VERSION_V2:
             _invalid("unsupported session schema version")
         _require_uuid(self.attempt_id, "attempt_id")
-        if not isinstance(self.assessment, PinnedAssessment):
+        if not isinstance(self.assessment, (PinnedAssessment, AssessmentMetadata)):
             _invalid("assessment is invalid")
+        if (
+            isinstance(self.assessment, AssessmentMetadata)
+            and self.status != ABANDONED
+        ):
+            _invalid(
+                "a session without content identity may only record abandonment"
+            )
         if not isinstance(self.profile, ModeProfile):
             _invalid("profile is invalid")
         started_at = _require_utc_datetime(self.started_at, "started_at")
@@ -577,6 +606,7 @@ class SessionStateV2:
             "schema_version": self.schema_version,
             "attempt_id": self.attempt_id,
             "assessment": self.assessment.to_dict(),
+            "content_identity": self.content_identity,
             "profile": self.profile.to_dict(),
             "started_at": _timestamp(self.started_at, "started_at"),
             "deadline_at": _timestamp(self.deadline_at, "deadline_at"),
@@ -604,6 +634,7 @@ class SessionStateV2:
                     "schema_version",
                     "attempt_id",
                     "assessment",
+                    "content_identity",
                     "profile",
                     "started_at",
                     "deadline_at",
@@ -626,10 +657,19 @@ class SessionStateV2:
             SESSION_SCHEMA_VERSION_V2
         ):
             _invalid("unsupported session schema version")
+        identity = _require_string(data["content_identity"], "content_identity")
+        if identity not in _CONTENT_IDENTITY:
+            _invalid("session content identity is invalid")
+        # The explicit label decides the shape; the shape is never inferred.
+        assessment = (
+            PinnedAssessment.from_dict(data["assessment"])
+            if identity == CONTENT_IDENTITY_PINNED
+            else AssessmentMetadata.from_dict(data["assessment"])
+        )
         return cls(
             schema_version=SESSION_SCHEMA_VERSION_V2,
             attempt_id=_require_uuid(data["attempt_id"], "attempt_id"),
-            assessment=PinnedAssessment.from_dict(data["assessment"]),
+            assessment=assessment,
             profile=ModeProfile.from_dict(data["profile"]),
             started_at=_parse_utc_timestamp(data["started_at"], "started_at"),
             deadline_at=_parse_utc_timestamp(data["deadline_at"], "deadline_at"),
@@ -783,9 +823,42 @@ def parse_session_record(value: object) -> SessionRecord:
     raise UnsupportedSchemaVersionError(f"unsupported session schema version: {version}")
 
 
+def abandoned_record(
+    state: SessionRecord, *, ended_at: datetime, reason: str
+) -> SessionStateV2:
+    """Return the abandoned successor of an active record.
+
+    The original start, deadline, and identity are unchanged. Any last practice
+    score moves to ``abandonment.practice_score`` so it is never read as a
+    submitted result. A session/v1 record becomes session/v2 with its stored
+    metadata as an explicit legacy identity: nothing pins content for it.
+    """
+    if not isinstance(state, (SessionState, SessionStateV2)):
+        _invalid("session is invalid")
+    if state.status != ACTIVE:
+        _invalid(f"cannot abandon an attempt in {state.status} state")
+    return SessionStateV2(
+        schema_version=SESSION_SCHEMA_VERSION_V2,
+        attempt_id=state.attempt_id,
+        assessment=state.assessment,
+        profile=state.profile,
+        started_at=state.started_at,
+        deadline_at=state.deadline_at,
+        status=ABANDONED,
+        revision=state.revision + 1,
+        score=None,
+        submitted_at=None,
+        abandonment=AbandonmentMetadata(
+            ended_at=ended_at, reason=reason, practice_score=state.score
+        ),
+        review_digest=None,
+    )
+
+
 def adapt_session_record(record: SessionRecord) -> AdaptedSessionRecord:
     """Normalize v1 or v2 session records in memory without upgrading disk bytes."""
     if isinstance(record, SessionStateV2):
+        pinned = isinstance(record.assessment, PinnedAssessment)
         return AdaptedSessionRecord(
             record=record,
             schema_version=record.schema_version,
@@ -799,9 +872,9 @@ def adapt_session_record(record: SessionRecord) -> AdaptedSessionRecord:
             revision=record.revision,
             score=record.score,
             submitted_at=record.submitted_at,
-            content_version=record.assessment.content_version,
-            content_digest=record.assessment.content_digest,
-            content_identity_available=True,
+            content_version=record.assessment.content_version if pinned else None,
+            content_digest=record.assessment.content_digest if pinned else None,
+            content_identity_available=pinned,
             abandonment=record.abandonment,
             practice_score=(
                 None
@@ -1219,7 +1292,7 @@ class ReviewRecord:
         A v2 submitted state stores this review's digest, so the review must
         exist first.
         """
-        pinned = isinstance(prior_state, SessionStateV2)
+        pinned = isinstance(prior_state.assessment, PinnedAssessment)
         return cls(
             schema_version=REVIEW_SCHEMA_VERSION,
             attempt_id=prior_state.attempt_id,
@@ -1401,6 +1474,418 @@ class SubmissionRecovery:
         )
 
 
+def _canonical_digest(document: Mapping[str, object]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _checksummed(body: dict[str, object]) -> dict[str, object]:
+    return {**body, "checksum": _canonical_digest(body)}
+
+
+def _verify_checksum(value: object, label: str) -> dict[str, object]:
+    data = dict(_require_mapping(value, label))
+    if "checksum" not in data:
+        _invalid(f"{label} must include checksum")
+    checksum = _require_digest(data.pop("checksum"), f"{label} checksum")
+    if _canonical_digest(data) != checksum:
+        _invalid(f"{label} checksum does not match its content")
+    return data
+
+
+@dataclass(frozen=True, slots=True)
+class RestartRequest:
+    """The canonical identity of one restart operation (D001).
+
+    Reusing ``operation_id`` with any other field changed is a conflict. An
+    identical repeat resolves to the operation's original replacement.
+    """
+
+    operation_id: str
+    old_attempt_id: str
+    expected_revision: int
+    assessment: PinnedAssessment
+    profile: ModeProfile
+
+    def __post_init__(self) -> None:
+        _require_uuid(self.operation_id, "operation_id")
+        _require_uuid(self.old_attempt_id, "old_attempt_id")
+        _require_nonnegative_integer(self.expected_revision, "expected_revision")
+        if not isinstance(self.assessment, PinnedAssessment):
+            _invalid("restart target assessment must be pinned")
+        if not isinstance(self.profile, ModeProfile):
+            _invalid("profile is invalid")
+
+    @property
+    def fingerprint(self) -> str:
+        """Digest of the canonical request; equal fingerprints are one request."""
+        return _canonical_digest(self.to_dict())
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": RESTART_REQUEST_SCHEMA_VERSION,
+            "operation_id": self.operation_id,
+            "old_attempt_id": self.old_attempt_id,
+            "expected_revision": self.expected_revision,
+            "assessment": self.assessment.to_dict(),
+            "profile": self.profile.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> RestartRequest:
+        data = _require_mapping(value, "restart request")
+        _require_keys(
+            data,
+            frozenset(
+                (
+                    "schema_version",
+                    "operation_id",
+                    "old_attempt_id",
+                    "expected_revision",
+                    "assessment",
+                    "profile",
+                )
+            ),
+            "restart request",
+        )
+        if _require_string(data["schema_version"], "schema_version") != (
+            RESTART_REQUEST_SCHEMA_VERSION
+        ):
+            raise UnsupportedSchemaVersionError(
+                "unsupported restart request schema version"
+            )
+        return cls(
+            operation_id=_require_uuid(data["operation_id"], "operation_id"),
+            old_attempt_id=_require_uuid(data["old_attempt_id"], "old_attempt_id"),
+            expected_revision=_require_nonnegative_integer(
+                data["expected_revision"], "expected_revision"
+            ),
+            assessment=PinnedAssessment.from_dict(data["assessment"]),
+            profile=ModeProfile.from_dict(data["profile"]),
+        )
+
+
+def _require_restart_event(
+    event: object,
+    *,
+    state: SessionStateV2,
+    name: str,
+    occurred_at: datetime,
+    label: str,
+) -> None:
+    if (
+        not isinstance(event, EventRecordV2)
+        or event.attempt_id != state.attempt_id
+        or event.revision != state.revision
+        or event.occurred_at != occurred_at
+        or event.name != name
+        or event.outcome != "succeeded"
+    ):
+        _invalid(f"restart journal {label} event does not match its state")
+
+
+@dataclass(frozen=True, slots=True)
+class RestartJournal:
+    """The checksummed write-ahead commit intent of one restart (D001 step 2).
+
+    Its durable presence is the commit point. Everything recovery needs is
+    inside: the exact prior and final states of the old attempt, the
+    replacement's state, both events, the transaction-owned staging name, and
+    the selection the pointer is expected to hold.
+    """
+
+    request: RestartRequest
+    old_prior_state: SessionRecord
+    old_final_state: SessionStateV2
+    old_event: EventRecordV2
+    replacement_state: SessionStateV2
+    replacement_event: EventRecordV2
+    staging_name: str
+    creation_token: str
+    expected_pointer: str | None
+    committed_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request, RestartRequest):
+            _invalid("restart journal request is invalid")
+        if not isinstance(self.old_prior_state, (SessionState, SessionStateV2)):
+            _invalid("restart journal prior state is invalid")
+        committed_at = _require_utc_datetime(self.committed_at, "committed_at")
+        object.__setattr__(self, "committed_at", committed_at)
+        prior = self.old_prior_state
+        if (
+            prior.attempt_id != self.request.old_attempt_id
+            or prior.revision != self.request.expected_revision
+            or prior.status != ACTIVE
+        ):
+            _invalid("restart journal prior state does not match its request")
+        final = self.old_final_state
+        if not isinstance(final, SessionStateV2) or final.abandonment is None:
+            _invalid("restart journal final state must be abandoned")
+        if final != abandoned_record(
+            prior, ended_at=committed_at, reason=final.abandonment.reason
+        ):
+            _invalid("restart journal final state does not follow its prior state")
+        _require_restart_event(
+            self.old_event,
+            state=final,
+            name="abandoned",
+            occurred_at=committed_at,
+            label="abandonment",
+        )
+        replacement = self.replacement_state
+        if (
+            not isinstance(replacement, SessionStateV2)
+            or replacement.assessment != self.request.assessment
+            or replacement.profile != self.request.profile
+            or replacement.status != ACTIVE
+            or replacement.revision != 0
+            or replacement.started_at != committed_at
+            or replacement.score is not None
+            or replacement.attempt_id == prior.attempt_id
+        ):
+            _invalid("restart journal replacement does not match its request")
+        _require_restart_event(
+            self.replacement_event,
+            state=replacement,
+            name="started",
+            occurred_at=committed_at,
+            label="replacement",
+        )
+        _require_uuid(self.creation_token, "creation_token")
+        if self.staging_name != (
+            f".{replacement.attempt_id}.staging-{self.creation_token}"
+        ):
+            _invalid("restart journal staging name is invalid")
+        if self.expected_pointer is not None:
+            _require_uuid(self.expected_pointer, "expected_pointer")
+            if self.expected_pointer == replacement.attempt_id:
+                _invalid("restart journal expected pointer is invalid")
+
+    @property
+    def operation_id(self) -> str:
+        return self.request.operation_id
+
+    def to_dict(self) -> dict[str, object]:
+        return _checksummed(
+            {
+                "schema_version": RESTART_JOURNAL_SCHEMA_VERSION,
+                "request": self.request.to_dict(),
+                "old_prior_state": self.old_prior_state.to_dict(),
+                "old_final_state": self.old_final_state.to_dict(),
+                "old_event": self.old_event.to_dict(),
+                "replacement_state": self.replacement_state.to_dict(),
+                "replacement_event": self.replacement_event.to_dict(),
+                "staging_name": self.staging_name,
+                "creation_token": self.creation_token,
+                "expected_pointer": self.expected_pointer,
+                "committed_at": _timestamp(self.committed_at, "committed_at"),
+            }
+        )
+
+    @classmethod
+    def from_dict(cls, value: object) -> RestartJournal:
+        data = _verify_checksum(value, "restart journal")
+        _require_keys(
+            data,
+            frozenset(
+                (
+                    "schema_version",
+                    "request",
+                    "old_prior_state",
+                    "old_final_state",
+                    "old_event",
+                    "replacement_state",
+                    "replacement_event",
+                    "staging_name",
+                    "creation_token",
+                    "expected_pointer",
+                    "committed_at",
+                )
+            ),
+            "restart journal",
+        )
+        if _require_string(data["schema_version"], "schema_version") != (
+            RESTART_JOURNAL_SCHEMA_VERSION
+        ):
+            raise UnsupportedSchemaVersionError(
+                "unsupported restart journal schema version"
+            )
+        raw_pointer = data["expected_pointer"]
+        return cls(
+            request=RestartRequest.from_dict(data["request"]),
+            old_prior_state=parse_session_record(data["old_prior_state"]),
+            old_final_state=SessionStateV2.from_dict(data["old_final_state"]),
+            old_event=EventRecordV2.from_dict(data["old_event"]),
+            replacement_state=SessionStateV2.from_dict(data["replacement_state"]),
+            replacement_event=EventRecordV2.from_dict(data["replacement_event"]),
+            staging_name=_require_string(data["staging_name"], "staging_name"),
+            creation_token=_require_uuid(data["creation_token"], "creation_token"),
+            expected_pointer=(
+                None
+                if raw_pointer is None
+                else _require_uuid(raw_pointer, "expected_pointer")
+            ),
+            committed_at=_parse_utc_timestamp(data["committed_at"], "committed_at"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AbandonmentRecovery:
+    """A write-ahead record for finishing one explicit abandonment exactly once.
+
+    The prior state is the active v1 or v2 record; the final state is its
+    abandoned successor as ``abandoned_record`` builds it, so a session/v1
+    attempt is upgraded only through this durable, replayable record.
+    """
+
+    schema_version: str
+    prior_state: SessionRecord
+    state: SessionStateV2
+    event: EventRecordV2
+
+    def __post_init__(self) -> None:
+        if self.schema_version != ABANDONMENT_RECOVERY_SCHEMA_VERSION:
+            _invalid("unsupported abandonment recovery schema version")
+        if not isinstance(self.prior_state, (SessionState, SessionStateV2)):
+            _invalid("abandonment recovery prior state is invalid")
+        if not isinstance(self.state, SessionStateV2) or self.state.abandonment is None:
+            _invalid("abandonment recovery requires an abandoned session")
+        if self.state != abandoned_record(
+            self.prior_state,
+            ended_at=self.state.abandonment.ended_at,
+            reason=self.state.abandonment.reason,
+        ):
+            _invalid("abandonment recovery does not follow its prior session")
+        _require_restart_event(
+            self.event,
+            state=self.state,
+            name="abandoned",
+            occurred_at=self.state.abandonment.ended_at,
+            label="abandonment",
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "prior_state": self.prior_state.to_dict(),
+            "state": self.state.to_dict(),
+            "event": self.event.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> AbandonmentRecovery:
+        data = _require_mapping(value, "abandonment recovery")
+        _require_keys(
+            data,
+            frozenset(("schema_version", "prior_state", "state", "event")),
+            "abandonment recovery",
+        )
+        version = _require_string(data["schema_version"], "schema_version")
+        if version != ABANDONMENT_RECOVERY_SCHEMA_VERSION:
+            raise UnsupportedSchemaVersionError(
+                f"unsupported abandonment recovery schema version: {version}"
+            )
+        return cls(
+            schema_version=version,
+            prior_state=parse_session_record(data["prior_state"]),
+            state=SessionStateV2.from_dict(data["state"]),
+            event=EventRecordV2.from_dict(data["event"]),
+        )
+
+    @classmethod
+    def for_abandonment(
+        cls, prior_state: SessionRecord, state: SessionStateV2, event: EventRecordUnion
+    ) -> AbandonmentRecovery:
+        return cls(
+            schema_version=ABANDONMENT_RECOVERY_SCHEMA_VERSION,
+            prior_state=prior_state,
+            state=state,
+            event=event,  # type: ignore[arg-type]
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RestartCompletion:
+    """The immutable receipt of one published restart operation.
+
+    A later identical request is answered from this record alone, without
+    reading, rewriting, or reselecting the replacement.
+    """
+
+    request: RestartRequest
+    replacement_attempt_id: str
+    committed_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request, RestartRequest):
+            _invalid("restart completion request is invalid")
+        _require_uuid(self.replacement_attempt_id, "replacement_attempt_id")
+        if self.replacement_attempt_id == self.request.old_attempt_id:
+            _invalid("restart completion replacement is invalid")
+        object.__setattr__(
+            self,
+            "committed_at",
+            _require_utc_datetime(self.committed_at, "committed_at"),
+        )
+
+    @property
+    def operation_id(self) -> str:
+        return self.request.operation_id
+
+    @classmethod
+    def from_journal(cls, journal: RestartJournal) -> RestartCompletion:
+        if not isinstance(journal, RestartJournal):
+            _invalid("restart journal is invalid")
+        return cls(
+            request=journal.request,
+            replacement_attempt_id=journal.replacement_state.attempt_id,
+            committed_at=journal.committed_at,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return _checksummed(
+            {
+                "schema_version": RESTART_COMPLETION_SCHEMA_VERSION,
+                "request": self.request.to_dict(),
+                "replacement_attempt_id": self.replacement_attempt_id,
+                "committed_at": _timestamp(self.committed_at, "committed_at"),
+            }
+        )
+
+    @classmethod
+    def from_dict(cls, value: object) -> RestartCompletion:
+        data = _verify_checksum(value, "restart completion")
+        _require_keys(
+            data,
+            frozenset(
+                (
+                    "schema_version",
+                    "request",
+                    "replacement_attempt_id",
+                    "committed_at",
+                )
+            ),
+            "restart completion",
+        )
+        if _require_string(data["schema_version"], "schema_version") != (
+            RESTART_COMPLETION_SCHEMA_VERSION
+        ):
+            raise UnsupportedSchemaVersionError(
+                "unsupported restart completion schema version"
+            )
+        return cls(
+            request=RestartRequest.from_dict(data["request"]),
+            replacement_attempt_id=_require_uuid(
+                data["replacement_attempt_id"], "replacement_attempt_id"
+            ),
+            committed_at=_parse_utc_timestamp(data["committed_at"], "committed_at"),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ActivePointer:
     """The validated workspace-root selection, never session authority."""
@@ -1429,11 +1914,14 @@ class ActivePointer:
 
 
 __all__ = [
+    "ABANDONMENT_RECOVERY_SCHEMA_VERSION",
     "ACTIVE",
     "ABANDONED",
     "ACTIVE_POINTER_SCHEMA_VERSION",
     "AdaptedSessionRecord",
     "AbandonmentMetadata",
+    "AbandonmentRecovery",
+    "END_REASON",
     "DRILL_DEFAULT_DURATION_SECONDS",
     "DRILL_MODE",
     "DRILL_PROFILE",
@@ -1453,7 +1941,14 @@ __all__ = [
     "CONTENT_IDENTITY_PINNED",
     "CONTENT_IDENTITY_UNAVAILABLE",
     "MAX_REVIEW_BYTES",
+    "RESTART_COMPLETION_SCHEMA_VERSION",
+    "RESTART_JOURNAL_SCHEMA_VERSION",
+    "RESTART_REASON",
+    "RESTART_REQUEST_SCHEMA_VERSION",
     "REVIEW_SCHEMA_VERSION",
+    "RestartCompletion",
+    "RestartJournal",
+    "RestartRequest",
     "ReviewRecord",
     "ReviewSource",
     "SESSION_SCHEMA_VERSION",
@@ -1470,6 +1965,7 @@ __all__ = [
     "SUBMISSION_RECOVERY_SCHEMA_VERSION",
     "SUBMISSION_RECOVERY_SCHEMA_VERSION_V2",
     "SubmissionRecovery",
+    "abandoned_record",
     "adapt_session_record",
     "canonical_review_bytes",
     "parse_event_record",

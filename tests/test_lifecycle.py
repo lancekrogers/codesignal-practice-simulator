@@ -18,6 +18,7 @@ sys.path.insert(0, str(PROJECT / "src"))
 from codesignal_practice_simulator.errors import (
     AssessmentVersionUnavailableError,
     IllegalLifecycleError,
+    LiveSelectionError,
     LockUnavailableError,
     SessionCorruptError,
 )
@@ -151,19 +152,30 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(full_attempt.exists(), True)
         self.assertEqual(DRILL_DEFAULT_DURATION_SECONDS, 1800)
 
-    def test_explicit_active_resume_replaces_selection(self) -> None:
+    def test_explicit_resume_replaces_selection_only_when_the_selected_attempt_is_not_live(self) -> None:
         first, first_attempt = self.start()
-        second, second_attempt = self.start()
+        second, second_attempt = self.start(mode="drill", drill_duration_seconds=60)
         first_before = durable_bytes(first_attempt)
         second_before = durable_bytes(second_attempt)
 
+        # Naming another attempt never displaces live selected work (D001).
+        with self.assertRaisesRegex(LiveSelectionError, "already selected"):
+            self.service.resume(first.attempt_id)
+        self.assertEqual(self.manager.resolve_attempt(), second_attempt)
+        self.assertEqual(durable_bytes(first_attempt), first_before)
+        self.assertEqual(durable_bytes(second_attempt), second_before)
+
+        # Once the selected attempt is no longer live, the explicit resume selects.
+        self.clock.value = second.deadline_at
         resumed = self.service.resume(first.attempt_id)
 
         self.assertEqual(resumed, first)
         self.assertEqual(self.manager.resolve_attempt(), first_attempt)
         self.assertNotEqual(first_attempt, second_attempt)
         self.assertEqual(durable_bytes(first_attempt), first_before)
-        self.assertEqual(durable_bytes(second_attempt), second_before)
+        self.assertEqual(
+            self.manager.persistence.read_session(second_attempt).status, EXPIRED
+        )
 
     def test_status_and_time_before_deadline_are_safe_reads(self) -> None:
         state, attempt = self.start()

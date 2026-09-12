@@ -20,33 +20,42 @@ from .clock import Clock
 from .errors import (
     IllegalLifecycleError,
     InvalidInputError,
+    LiveSelectionError,
     ScoredSourceChangedError,
+    SessionCorruptError,
     SessionUnavailableError,
+    StaleRevisionError,
 )
 from .models import (
+    ABANDONED,
     ACTIVE,
     ACTIVE_POINTER_SCHEMA_VERSION,
     DRILL_DEFAULT_DURATION_SECONDS,
     DRILL_MODE,
     DRILL_PROFILE,
+    END_REASON,
     EXPIRED,
     FULL_DURATION_SECONDS,
     FULL_MODE,
     FULL_PROFILE,
+    RESTART_REASON,
     SESSION_SCHEMA_VERSION_V2,
     SUBMITTED,
     ActivePointer,
     AssessmentMetadata,
     ModeProfile,
+    PinnedAssessment,
+    RestartRequest,
     ReviewRecord,
     ReviewSource,
     ScoreSummary,
     SessionRecord,
     SessionStateV2,
+    abandoned_record,
     review_digest,
     session_event,
 )
-from .workspace import WorkspaceManager
+from .workspace import RestartResult, WorkspaceManager
 
 
 Scorer = Callable[[Path], ScoreSummary]
@@ -69,6 +78,17 @@ class SubmissionResult:
     state: SessionRecord
     score: ScoreSummary
     newly_submitted: bool = field(default=False, compare=False, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class AbandonResult:
+    """The durable abandoned record returned by first and repeat abandonments."""
+
+    state: SessionStateV2
+    newly_abandoned: bool = field(default=False, compare=False, repr=False)
+
+    def to_dict(self) -> dict[str, object]:
+        return {"session": self.state.to_dict(), "newly_abandoned": self.newly_abandoned}
 
 
 class LifecycleService:
@@ -95,20 +115,28 @@ class LifecycleService:
         """Create and select one active attempt with an effective profile."""
         return self._start(assessment, mode, drill_duration_seconds)
 
-    def start_web(
+    def start_exclusive(
         self,
         assessment: AssessmentMetadata,
         *,
         mode: Literal["full", "drill"] = FULL_MODE,
         drill_duration_seconds: int | None = None,
     ) -> SessionRecord:
-        """Create a web attempt only when no live attempt is selected."""
+        """Create an attempt only when no live attempt is selected (D001).
+
+        This is the plain ``start`` every transport exposes: a selected attempt
+        that is still active is never replaced silently. The user resumes it,
+        ends it, or restarts it. ``start`` remains the unguarded primitive.
+        """
         return self._start(
             assessment,
             mode,
             drill_duration_seconds,
             before_publish=self._reject_live_selection,
         )
+
+    # Kept for callers that predate the shared policy; identical behavior.
+    start_web = start_exclusive
 
     def _start(
         self,
@@ -140,17 +168,27 @@ class LifecycleService:
     def _reject_live_selection(
         self, attempts: Path, pointer: ActivePointer | None
     ) -> None:
+        """Refuse to displace a selected attempt that is still live.
+
+        Only stored status and deadline decide liveness. The selected attempt's
+        content version may no longer be installed; that must not make it
+        impossible to start anything else, and it must not make an unfinished
+        attempt disappear either. The message names the explicit resolutions.
+        """
         if pointer is None:
             return
         attempt = attempts / pointer.attempt_id
         if not attempt.is_dir() or attempt.is_symlink():
             raise SessionUnavailableError("selected attempt is unavailable")
         with self.persistence.attempt_lock(attempt):
-            state, _recovered = self._read_recovered_session_locked(attempt)
+            state, _recovered = self._read_recovered_session_locked(
+                attempt, validate=False
+            )
             state, _observed_at = self._expire_if_overdue_locked(attempt, state)
             if state.status == ACTIVE:
-                raise IllegalLifecycleError(
-                    "an active attempt is already selected"
+                raise LiveSelectionError(
+                    "an active attempt is already selected; resume it, or end or "
+                    f"restart it first: {state.attempt_id}"
                 )
 
     def select_attempt(self, attempt_id: str | None = None) -> Path:
@@ -158,7 +196,13 @@ class LifecycleService:
         return self.workspace.resolve_attempt(attempt_id)
 
     def resume(self, attempt_id: str | None = None) -> SessionRecord:
-        """Resume an active attempt and select an explicitly named attempt."""
+        """Resume an active attempt and select an explicitly named attempt.
+
+        Selecting a different attempt while the selected one is still live is a
+        conflict the user resolves explicitly (end or restart it): legacy
+        non-selected active attempts stay discoverable, but never displace live
+        work by being named.
+        """
         with self.workspace.selected_attempt(attempt_id) as attempt:
             state = self._read_validated_session_locked(attempt)
             if state.status != ACTIVE:
@@ -172,11 +216,149 @@ class LifecycleService:
                     f"cannot resume an attempt in {state.status} state"
                 )
             if attempt_id is not None:
+                attempts = self.workspace.attempts_directory
+                self._reject_other_live_selection(attempts, state.attempt_id)
                 self.persistence.write_active_pointer_locked(
-                    self.workspace.attempts_directory,
-                    self._pointer_for(state),
+                    attempts, self._pointer_for(state)
                 )
             return state
+
+    def _reject_other_live_selection(self, attempts: Path, attempt_id: str) -> None:
+        try:
+            pointer = self.persistence.read_active_pointer(attempts)
+        except SessionCorruptError:
+            # An unreadable selector selects nothing; the explicit resume
+            # replaces it, which is the only way to repair it.
+            return
+        if pointer is None or pointer.attempt_id == attempt_id:
+            return
+        selected = attempts / pointer.attempt_id
+        if not selected.is_dir() or selected.is_symlink():
+            return
+        self._reject_live_selection(attempts, pointer)
+
+    def abandon(
+        self,
+        attempt_id: str | None = None,
+        *,
+        expected_revision: int,
+        reason: str = END_REASON,
+    ) -> AbandonResult:
+        """End an active attempt explicitly, exactly once, at a known revision.
+
+        The transition is written ahead and replayed like a submission, so an
+        interrupted abandonment (including a session/v1 upgrade) completes on
+        the next access. A repeat at the same expected revision returns the
+        durable record; a different revision is a stale-state conflict.
+        """
+        if isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
+            raise InvalidInputError("expected revision must be a non-negative integer")
+        if expected_revision < 0:
+            raise InvalidInputError("expected revision must be a non-negative integer")
+        with self.workspace.selected_attempt(attempt_id) as attempt:
+            state = self._read_abandonable_session_locked(attempt)
+            if state.status == ABANDONED:
+                if state.revision != expected_revision + 1:
+                    raise StaleRevisionError(
+                        "attempt changed since it was read; refresh and retry "
+                        f"(expected revision {expected_revision}, current {state.revision})"
+                    )
+                assert isinstance(state, SessionStateV2)
+                return AbandonResult(state=state, newly_abandoned=False)
+            if state.status == ACTIVE:
+                self._recover_missing_event_locked(attempt, state)
+                state, now = self._expire_if_overdue_locked(attempt, state)
+            else:
+                now = self._now()
+            # A terminal state is the more actionable answer than a revision
+            # mismatch: refreshing cannot make an expired attempt abandonable.
+            if state.status != ACTIVE:
+                raise IllegalLifecycleError(
+                    f"cannot abandon an attempt in {state.status} state"
+                )
+            if state.revision != expected_revision:
+                raise StaleRevisionError(
+                    "attempt changed since it was read; refresh and retry "
+                    f"(expected revision {expected_revision}, current {state.revision})"
+                )
+            abandoned = abandoned_record(state, ended_at=now, reason=reason)
+            event = session_event(
+                abandoned,
+                event_id=str(uuid4()),
+                occurred_at=now,
+                name="abandoned",
+                outcome="succeeded",
+                arguments={"reason": reason},
+            )
+            self.persistence.persist_abandonment_locked(attempt, state, abandoned, event)
+            return AbandonResult(state=abandoned, newly_abandoned=True)
+
+    def restart(
+        self,
+        attempt_id: str | None = None,
+        *,
+        operation_id: str,
+        expected_revision: int,
+        assessment: AssessmentMetadata | None = None,
+        mode: Literal["full", "drill"] | None = None,
+        drill_duration_seconds: int | None = None,
+    ) -> RestartResult:
+        """Abandon the selected attempt and create its replacement (D001).
+
+        Implicit selection is resolved once, under the workspace lock, and the
+        explicit ID is what the journal records. An overdue attempt is expired
+        first, so the workspace sees the state a user would. The target defaults
+        to the old attempt's assessment and profile and is always pinned to the
+        installed content, so a restart after a content update lands on the
+        new content while the old record keeps its own identity.
+        """
+        if mode is None and drill_duration_seconds is not None:
+            raise InvalidInputError("a drill duration requires drill mode")
+        with self.workspace.selected_attempt(attempt_id) as attempt:
+            state = self._read_abandonable_session_locked(attempt)
+            if state.status == ACTIVE:
+                self._recover_missing_event_locked(attempt, state)
+                state, _observed_at = self._expire_if_overdue_locked(attempt, state)
+            old_attempt_id = state.attempt_id
+            profile = state.profile if mode is None else self._profile(mode, drill_duration_seconds)
+            target = (
+                self.workspace.registry.require(state.assessment.assessment_id).metadata
+                if assessment is None
+                else assessment
+            )
+        # The locks above are released on purpose. The workspace transaction
+        # takes workspace -> old attempt -> staging itself; entering it while
+        # still holding this attempt lock would invert the project lock order.
+        # It re-validates revision and status under its own locks, so anything
+        # that changed in between is a conflict, never a lost update.
+        pinned = self.workspace.pinned_assessment(target)
+        request = RestartRequest(
+            operation_id=operation_id,
+            old_attempt_id=old_attempt_id,
+            expected_revision=expected_revision,
+            assessment=pinned,
+            profile=profile,
+        )
+        return self.workspace.restart_attempt(
+            request, now=self._now(), reason=RESTART_REASON
+        )
+
+    def _read_abandonable_session_locked(self, attempt: Path) -> SessionRecord:
+        """Read state for an abandonment; only a legacy record needs the registry.
+
+        A pinned v2 record describes itself, and ending it scores nothing, so an
+        uninstalled content version must not trap the user in a live attempt.
+        A session/v1 record is interpretable only through today's registry; an
+        unknown or changed definition blocks this mutation, never read-only
+        history.
+        """
+        state = self.persistence.read_session(attempt)
+        if not (
+            isinstance(state, SessionStateV2)
+            and isinstance(state.assessment, PinnedAssessment)
+        ):
+            self.workspace.definition_for_persisted_session(state)
+        return state
 
     def status(self, attempt_id: str | None = None) -> SessionRecord:
         """Observe expiry if needed, then return the authoritative state."""
@@ -396,11 +578,16 @@ class LifecycleService:
         return state
 
     def _read_recovered_session_locked(
-        self, attempt: Path
+        self, attempt: Path, *, validate: bool = True
     ) -> tuple[SessionRecord, bool]:
-        """Finish any write-ahead submission before applying command policy."""
-        recovered = self.persistence.recover_submission_locked(attempt)
-        return self._read_validated_session_locked(attempt), recovered is not None
+        """Finish any write-ahead transition before applying command policy."""
+        recovered = self.persistence.recover_attempt_locked(attempt)
+        state = (
+            self._read_validated_session_locked(attempt)
+            if validate
+            else self.persistence.read_session(attempt)
+        )
+        return state, recovered is not None
 
     def _now(self) -> datetime:
         now = self.clock.now()
@@ -441,7 +628,9 @@ class LifecycleService:
 
 
 __all__ = [
+    "AbandonResult",
     "LifecycleService",
+    "RestartResult",
     "Scorer",
     "SubmissionResult",
     "TimeObservation",

@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from .clock import Clock
 from .errors import (
+    InvalidInputError,
     LockUnavailableError,
     SessionCorruptError,
     SessionUnavailableError,
@@ -25,10 +26,14 @@ from .models import (
     MAX_REVIEW_BYTES,
     SESSION_SCHEMA_VERSION,
     SESSION_SCHEMA_VERSION_V2,
+    AbandonmentRecovery,
     ActivePointer,
     EventRecordUnion,
+    RestartCompletion,
+    RestartJournal,
     ReviewRecord,
     SessionRecord,
+    SessionStateV2,
     SubmissionRecovery,
     canonical_review_bytes,
     parse_event_record,
@@ -49,8 +54,16 @@ ACTIVE_FILENAME = "active.json"
 ATTEMPT_LOCK_FILENAME = ".session.lock"
 WORKSPACE_LOCK_FILENAME = ".workspace.lock"
 SUBMISSION_RECOVERY_FILENAME = ".submission-recovery.json"
+ABANDONMENT_RECOVERY_FILENAME = ".abandonment-recovery.json"
+# Attempt-owned write-ahead markers: while one exists the durable outcome is
+# still being published and read-only views must report the attempt as pending.
+RECOVERY_MARKER_FILENAMES = (SUBMISSION_RECOVERY_FILENAME, ABANDONMENT_RECOVERY_FILENAME)
 REVIEW_FILENAME = "review.json"
+RESTART_JOURNAL_DIRECTORY = ".restart-journal"
+RESTART_COMPLETION_DIRECTORY = ".restart-completed"
 MAX_SESSION_BYTES = 1024 * 1024
+# Four session records plus two events with room for escaping.
+MAX_RESTART_RECORD_BYTES = 4 * MAX_SESSION_BYTES
 
 # Schema families (CP0002): readers dispatch on schema_version without upgrading
 # disk. New attempts write session/v2 and event/v2; existing v1 attempts keep
@@ -252,48 +265,16 @@ class Persistence:
         if recovery is None:
             return None
         current = self.read_session(attempt_directory)
-        events, tail = self._read_events(attempt_directory)
         if current not in (recovery.prior_state, recovery.state):
             raise SessionCorruptError(
                 f"submission recovery state does not match: {attempt_directory}"
             )
-        self._validate_event_attempts(attempt_directory, events, recovery.state)
         # The review is published first: a submitted state never exists without
         # the immutable bytes it identifies.
         self._publish_review_locked(attempt_directory, recovery.review)
-        expected = recovery.event
-        has_expected_event = self._validate_submission_event_at_expected_revision(
-            attempt_directory, events, expected
+        self.publish_transition_locked(
+            attempt_directory, recovery.prior_state, recovery.state, recovery.event
         )
-        if current == recovery.prior_state:
-            self.write_session_locked(attempt_directory, recovery.state)
-        if has_expected_event:
-            # A prior process may have died after append or after an uncertain fsync.
-            # Replacing canonical complete records confirms a safe append boundary.
-            self._write_events_locked(attempt_directory, events)
-        else:
-            if tail != "complete":
-                self._write_events_locked(attempt_directory, [*events, expected])
-            else:
-                try:
-                    self.append_event_locked(attempt_directory, expected)
-                except SessionUnavailableError:
-                    # An append may have reached the kernel before its flush reported
-                    # failure. Rebuild the known complete log rather than retrying an
-                    # unknown tail or accepting an unflushed event.
-                    events, _tail = self._read_events(attempt_directory)
-                    self._validate_event_attempts(
-                        attempt_directory, events, recovery.state
-                    )
-                    has_expected_event = (
-                        self._validate_submission_event_at_expected_revision(
-                            attempt_directory, events, expected
-                        )
-                    )
-                    if not has_expected_event:
-                        events = [*events, expected]
-                    self._write_events_locked(attempt_directory, events)
-
         try:
             self.filesystem.unlink(attempt_directory / SUBMISSION_RECOVERY_FILENAME)
             self.filesystem.flush_directory(attempt_directory)
@@ -302,6 +283,249 @@ class Persistence:
                 f"cannot complete submission recovery: {attempt_directory}"
             ) from error
         return recovery.state
+
+    def recover_attempt_locked(self, attempt_directory: Path) -> SessionRecord | None:
+        """Finish any write-ahead transition this attempt owns; caller holds its lock.
+
+        A submission and an abandonment cannot both be pending for one attempt:
+        each requires the other's prior state to be live. Both present is
+        corruption and nothing is written.
+        """
+        submission = attempt_directory / SUBMISSION_RECOVERY_FILENAME
+        abandonment = attempt_directory / ABANDONMENT_RECOVERY_FILENAME
+        if (submission.exists() or submission.is_symlink()) and (
+            abandonment.exists() or abandonment.is_symlink()
+        ):
+            raise SessionCorruptError(
+                f"conflicting recovery markers: {attempt_directory.name}"
+            )
+        recovered = self.recover_submission_locked(attempt_directory)
+        if recovered is None:
+            recovered = self.recover_abandonment_locked(attempt_directory)
+        return recovered
+
+    def persist_abandonment_locked(
+        self,
+        attempt_directory: Path,
+        prior_state: SessionRecord,
+        state: SessionStateV2,
+        event: EventRecordUnion,
+    ) -> None:
+        """Write ahead one abandonment, then publish its exact state and event."""
+        recovery = AbandonmentRecovery.for_abandonment(prior_state, state, event)
+        self._atomic_json(
+            attempt_directory / ABANDONMENT_RECOVERY_FILENAME, recovery.to_dict()
+        )
+        self.recover_abandonment_locked(attempt_directory)
+
+    def recover_abandonment_locked(
+        self, attempt_directory: Path
+    ) -> SessionRecord | None:
+        """Finish a write-ahead abandonment; the caller owns the attempt lock."""
+        path = attempt_directory / ABANDONMENT_RECOVERY_FILENAME
+        if path.is_symlink():
+            raise SessionCorruptError(
+                f"abandonment recovery is unsafe: {attempt_directory.name}"
+            )
+        if not path.exists():
+            return None
+        if not path.is_file():
+            raise SessionCorruptError(
+                f"abandonment recovery is invalid: {attempt_directory.name}"
+            )
+        recovery = self._read_model(
+            path,
+            AbandonmentRecovery.from_dict,
+            "abandonment recovery",
+            max_bytes=MAX_RESTART_RECORD_BYTES,
+        )
+        self.publish_transition_locked(
+            attempt_directory, recovery.prior_state, recovery.state, recovery.event
+        )
+        try:
+            self.filesystem.unlink(path)
+            self.filesystem.flush_directory(attempt_directory)
+        except OSError as error:
+            raise SessionUnavailableError(
+                f"cannot complete abandonment recovery: {attempt_directory.name}"
+            ) from error
+        return recovery.state
+
+    def publish_transition_locked(
+        self,
+        attempt_directory: Path,
+        prior_state: SessionRecord,
+        state: SessionRecord,
+        event: EventRecordUnion,
+    ) -> None:
+        """Idempotently publish one recorded state and its event.
+
+        The caller owns the attempt lock and has a durable record of exactly
+        this transition. The current session must be the prior or the final
+        state; anything else is corruption and nothing is written. The event
+        is appended once, at its recorded revision, and never duplicated.
+        """
+        current = self.read_session(attempt_directory)
+        events, tail = self._read_events(attempt_directory)
+        if current not in (prior_state, state):
+            raise SessionCorruptError(
+                f"recorded transition does not match its session: {attempt_directory}"
+            )
+        self._validate_event_attempts(attempt_directory, events, state)
+        has_expected_event = self._validate_submission_event_at_expected_revision(
+            attempt_directory, events, event
+        )
+        if current == prior_state:
+            self.write_session_locked(attempt_directory, state)
+        if has_expected_event:
+            # A prior process may have died after append or after an uncertain fsync.
+            # Replacing canonical complete records confirms a safe append boundary.
+            self._write_events_locked(attempt_directory, events)
+        elif tail != "complete":
+            self._write_events_locked(attempt_directory, [*events, event])
+        else:
+            try:
+                self.append_event_locked(attempt_directory, event)
+            except SessionUnavailableError:
+                # An append may have reached the kernel before its flush reported
+                # failure. Rebuild the known complete log rather than retrying an
+                # unknown tail or accepting an unflushed event.
+                events, _tail = self._read_events(attempt_directory)
+                self._validate_event_attempts(attempt_directory, events, state)
+                if not self._validate_submission_event_at_expected_revision(
+                    attempt_directory, events, event
+                ):
+                    events = [*events, event]
+                self._write_events_locked(attempt_directory, events)
+
+    # Restart journal (D001). Both directories live beside the attempts and are
+    # owned by the workspace lock. A journal file is one operation's commit
+    # intent; a completion file is its immutable receipt.
+
+    def read_restart_journals(self, attempts_directory: Path) -> list[RestartJournal]:
+        """Return every pending commit intent, failing closed on unreadable ones."""
+        directory = attempts_directory / RESTART_JOURNAL_DIRECTORY
+        journals: list[RestartJournal] = []
+        for path in self._journal_files(directory, "restart journal"):
+            journals.append(
+                self._read_model(
+                    path,
+                    RestartJournal.from_dict,
+                    "restart journal",
+                    max_bytes=MAX_RESTART_RECORD_BYTES,
+                )
+            )
+        journals.sort(key=lambda journal: journal.operation_id)
+        return journals
+
+    def read_restart_journal(
+        self, attempts_directory: Path, operation_id: str
+    ) -> RestartJournal | None:
+        """Return one pending commit intent, or ``None`` when it is absent."""
+        path = attempts_directory / RESTART_JOURNAL_DIRECTORY / f"{operation_id}.json"
+        if not self._record_present(path, "restart journal"):
+            return None
+        return self._read_model(
+            path,
+            RestartJournal.from_dict,
+            "restart journal",
+            max_bytes=MAX_RESTART_RECORD_BYTES,
+        )
+
+    def write_restart_journal_locked(
+        self, attempts_directory: Path, journal: RestartJournal
+    ) -> None:
+        """Durably record a commit intent; its presence is the commit point."""
+        if not isinstance(journal, RestartJournal):
+            raise InvalidInputError("restart journal is invalid")
+        directory = attempts_directory / RESTART_JOURNAL_DIRECTORY
+        self.filesystem.mkdir(directory, exist_ok=True)
+        self._atomic_json(directory / f"{journal.operation_id}.json", journal.to_dict())
+
+    def remove_restart_journal_locked(
+        self, attempts_directory: Path, operation_id: str
+    ) -> None:
+        """Prune one journal after its completion receipt is durable."""
+        directory = attempts_directory / RESTART_JOURNAL_DIRECTORY
+        path = directory / f"{operation_id}.json"
+        try:
+            if path.exists() or path.is_symlink():
+                self.filesystem.unlink(path)
+                self.filesystem.flush_directory(directory)
+        except OSError as error:
+            raise SessionUnavailableError(
+                f"cannot prune restart journal: {operation_id}"
+            ) from error
+
+    def read_restart_completion(
+        self, attempts_directory: Path, operation_id: str
+    ) -> RestartCompletion | None:
+        """Return the receipt of a completed operation, or ``None``."""
+        path = (
+            attempts_directory / RESTART_COMPLETION_DIRECTORY / f"{operation_id}.json"
+        )
+        if not self._record_present(path, "restart completion"):
+            return None
+        return self._read_model(
+            path,
+            RestartCompletion.from_dict,
+            "restart completion",
+            max_bytes=MAX_RESTART_RECORD_BYTES,
+        )
+
+    def write_restart_completion_locked(
+        self, attempts_directory: Path, completion: RestartCompletion
+    ) -> None:
+        """Publish a receipt once; an existing different receipt is corruption."""
+        if not isinstance(completion, RestartCompletion):
+            raise InvalidInputError("restart completion is invalid")
+        existing = self.read_restart_completion(
+            attempts_directory, completion.operation_id
+        )
+        if existing is not None:
+            if existing != completion:
+                raise SessionCorruptError(
+                    "restart completion does not match its journal: "
+                    f"{completion.operation_id}"
+                )
+            return
+        directory = attempts_directory / RESTART_COMPLETION_DIRECTORY
+        self.filesystem.mkdir(directory, exist_ok=True)
+        self._atomic_json(
+            directory / f"{completion.operation_id}.json", completion.to_dict()
+        )
+
+    def _journal_files(self, directory: Path, label: str) -> list[Path]:
+        if directory.is_symlink():
+            raise SessionCorruptError(f"{label} directory is unsafe")
+        if not directory.exists():
+            return []
+        if not directory.is_dir():
+            raise SessionCorruptError(f"{label} directory is invalid")
+        try:
+            children = sorted(directory.iterdir())
+        except OSError as error:
+            raise SessionUnavailableError(f"cannot inspect {label} directory") from error
+        files: list[Path] = []
+        for child in children:
+            if child.name.startswith(".") and child.name.endswith(".tmp"):
+                # An interrupted atomic write; the record it was for never
+                # became the commit point.
+                continue
+            if not self._record_present(child, label):
+                raise SessionCorruptError(f"{label} directory contains an invalid entry")
+            files.append(child)
+        return files
+
+    @staticmethod
+    def _record_present(path: Path, label: str) -> bool:
+        if path.is_symlink():
+            raise SessionCorruptError(f"{label} is unsafe: {path.name}")
+        if not path.exists():
+            return False
+        if not path.is_file() or path.suffix != ".json":
+            raise SessionCorruptError(f"{label} is invalid: {path.name}")
+        return True
 
     def _publish_review_locked(
         self, attempt_directory: Path, review: ReviewRecord | None
@@ -554,9 +778,13 @@ def initial_event(state: SessionRecord) -> EventRecordUnion:
 
 
 __all__ = [
+    "ABANDONMENT_RECOVERY_FILENAME",
     "ACTIVE_FILENAME",
     "ATTEMPT_LOCK_FILENAME",
     "EVENTS_FILENAME",
+    "RECOVERY_MARKER_FILENAMES",
+    "RESTART_COMPLETION_DIRECTORY",
+    "RESTART_JOURNAL_DIRECTORY",
     "REVIEW_FILENAME",
     "SESSION_FILENAME",
     "SUBMISSION_RECOVERY_FILENAME",

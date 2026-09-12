@@ -36,7 +36,12 @@ from .models import (
     adapt_session_record,
     review_digest,
 )
-from .persistence import MAX_SESSION_BYTES, SESSION_FILENAME, Persistence
+from .persistence import (
+    MAX_SESSION_BYTES,
+    RECOVERY_MARKER_FILENAMES,
+    SESSION_FILENAME,
+    Persistence,
+)
 
 
 CAPTURED = "captured"
@@ -161,9 +166,10 @@ class AttemptReviewService:
     ) -> AttemptReview:
         """Return one attempt's review, reading nothing it does not need."""
         attempt = self._attempt_directory(attempt_id)
-        # Finalization owns repair. A pending marker means the durable outcome is
-        # still being published, so this read reports retryable unavailability.
-        if (attempt / ".submission-recovery.json").exists():
+        # Lifecycle mutations own repair. A pending marker means the durable
+        # outcome is still being published, so this read reports retryable
+        # unavailability instead of serving a half-published record.
+        if any((attempt / marker).exists() for marker in RECOVERY_MARKER_FILENAMES):
             raise ReviewPendingError(
                 f"attempt is being finalized; retry: {attempt_id}"
             )

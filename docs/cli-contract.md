@@ -29,16 +29,27 @@ versions against one workspace is unsupported. Both versions contain:
 `session/v2` additionally pins the content its attempt was created from and
 identifies the review it published:
 
-- `assessment` also carries `content_version` and `content_digest`, computed at
-  creation from the packaged manifest's declared file hashes plus the runner
-  contract, and verified against the staged copies before the attempt exists.
-  Continuing or scoring the attempt requires that same installed content;
-  stored results stay readable when it is gone.
-- `status` may also be `abandoned`, with `abandonment` metadata;
+- `content_identity` is `pinned` for every attempt this release creates. Its
+  `assessment` then also carries `content_version` and `content_digest`,
+  computed at creation from the packaged manifest's declared file hashes plus
+  the runner contract, and verified against the staged copies before the
+  attempt exists. Continuing or scoring the attempt requires that same
+  installed content; stored results stay readable when it is gone.
+- `status` may also be `abandoned`, with `abandonment` metadata: `ended_at`,
+  a `reason`, and `practice_score`, the last `test` result moved out of
+  `score` so it is never read as a submitted result. The original `started_at`
+  and `deadline_at` are unchanged.
 - `review_digest` on a submitted session names its `review.json` record.
 
 `session/v1` records carry no content identity. Nothing infers one for them
-from today's registry.
+from today's registry. The one mutation that rewrites a v1 record's schema is
+explicit abandonment (a restart or an end-attempt action): v1 has no
+`abandoned` status, so that record becomes `session/v2` with
+`content_identity: unavailable` and its stored three-field `assessment`
+unchanged. This legacy-identity variant is only ever abandoned; a new attempt
+can never start from it, and no content version or digest is ever attached to
+it. Its `events.jsonl` keeps the existing `event/v1` records and gains the
+`event/v2` abandonment event.
 
 Every score contains results for levels 1 through 4, in order. Each result is
 `passed`, `failed`, or `error`; `passed_levels` and
@@ -92,11 +103,59 @@ An active session is expired when the injected UTC clock is at or after
 | `resume` | Resume and may select the attempt | Atomically record `expired`, then return exit 4 | Exit 4; no score, event, revision, or state change | Exit 4; no change |
 | `test` | Run all four groups and persist the score | Atomically record `expired`, then return exit 4 without scoring | Exit 4; no score, event, revision, or state change | Exit 4; no change |
 | `submit` | Run scoring and atomically store one submitted result | First record `expired`, then store one submitted result | Store one submitted result | Return the exact stored result; no scoring, event, revision, timestamp, or state change |
+| `abandon`, `restart` | Write ahead and publish one `abandoned` transition (restart also publishes the replacement and selects it) | Atomically record `expired`, then return exit 4 | Exit 4; no change | Exit 4; no change |
+
+Abandoned attempts behave like submitted ones for every command above except
+that `submit` is also exit 4: an abandoned attempt is never scored. A repeat
+`abandon` at the same expected revision, or a repeat `restart` with the same
+operation ID and arguments, returns the stored outcome without writing.
 
 The expiry transition in the “active at/after deadline” column is the one
 permitted mutation for that observation. Rejection itself does not append a
 second event or revise the state. Every state change is made while holding the
 attempt lock and is paired with exactly one event by persistence services.
+
+## Restart transaction
+
+A restart abandons one active attempt and creates its replacement as a single
+recoverable operation (`WorkspaceManager.restart_attempt`). The caller supplies
+a `restart-request/v1`: an operation UUID, the old attempt ID and its expected
+`revision`, and the target pinned assessment and profile. Those fields are the
+operation's identity: reusing the UUID with any of them changed is a conflict
+(exit 4), and an identical repeat returns the original replacement ID without
+touching the current selection, even after that replacement was submitted or
+another attempt was selected.
+
+Locks are taken in the order workspace, old attempt, then the transaction-owned
+replacement staging; the workspace lock is never taken while an attempt lock is
+held. A busy old attempt (for example, one being scored) is a bounded exit 4,
+not a wait. Before anything is staged the old attempt must be `active`, before
+its deadline, and at the expected revision; the target must be the installed
+content and a supported profile.
+
+The replacement is staged through the same verified creation path as `start`,
+then `attempts/.restart-journal/<operation>.json` (`restart-journal/v1`,
+checksummed) is written. That file is the commit point. It holds the old
+attempt's exact prior and abandoned states and event, the replacement's state
+and `started` event, the staging name, and the selection the pointer is
+expected to hold. Before it is durable, any failure leaves the old attempt
+active and selected and removes only the staging directory. After it, the
+operation is published in order: old abandoned state and event, replacement
+directory, active pointer, then `attempts/.restart-completed/<operation>.json`
+(`restart-completion/v1`, the immutable receipt), then the journal is pruned.
+The replacement's timer starts at the timestamp committed in the journal; a
+delayed recovery does not extend it.
+
+A storage failure after the commit point is reported as exit 3 with the
+operation ID, and the journal stays. Every selection mutation, `reconcile`, and
+the explicit recovery entrypoint roll pending journals forward first, before
+creation-marker reconciliation, so a published but not yet selected
+replacement is never mistaken for an interrupted create. Recovery verifies the
+old record is the prior or abandoned state, the replacement is either still
+staged or published unchanged, and the pointer is either the expected prior
+selection or already the replacement, before it writes anything. Anything else
+fails closed with the journal and staging preserved for repair. Metadata and
+history reads never run this recovery.
 
 ## Stable exits
 
@@ -104,8 +163,8 @@ attempt lock and is paired with exactly one event by persistence services.
 | --- | --- |
 | 0 | Command completed, including expired `status`/`time` and every successfully finalized `submit`, even when stored groups failed or errored. |
 | 2 | Invalid input, including malformed identifiers, unsupported schemas, invalid profiles, or invalid durations. |
-| 3 | Session unavailable or corrupt, including no valid active pointer, malformed persisted state, or a saved assessment that no longer matches the registry. |
-| 4 | Illegal lifecycle operation or lock contention. |
+| 3 | Session unavailable or corrupt, including no valid active pointer, malformed persisted state, a saved assessment that no longer matches the registry, or a committed restart whose publication is still pending. |
+| 4 | Illegal lifecycle operation or lock contention, including a stale expected revision or a restart operation ID reused with different arguments. |
 | 5 | Only the `test` command returns this exit: it ran and at least one group was non-passing. |
 
 Expected domain errors are rendered as safe structured errors in `--json` mode
@@ -127,10 +186,45 @@ codesignal-sim
 ├── task    [--json] [--workspace-root PATH] [--attempt UUID] --level {1,2,3,4}
 ├── test    [--json] [--workspace-root PATH] [--attempt UUID]
 ├── submit  [--json] [--workspace-root PATH] [--attempt UUID]
+├── abandon [--json] [--workspace-root PATH] [--attempt UUID]
+│           --expected-revision N
+├── restart [--json] [--workspace-root PATH] [--attempt UUID]
+│           --expected-revision N [--operation-id UUID]
+│           [--mode {full,drill}] [--drill-duration-seconds SECONDS]
 ├── context [--json] [--workspace-root PATH] [--attempt UUID]
             [--format {markdown,json}]
 └── web     [--json] [--workspace-root PATH] [--port PORT] [--no-open]
 ```
+
+`abandon` ends the selected active attempt explicitly: its state becomes
+`abandoned` with `ended_at`, the reason `ended`, and the last practice score;
+nothing is scored, deleted, or submitted. `restart` does the same with the
+reason `restarted` and creates a replacement in one recoverable operation (see
+"Restart transaction"); the replacement defaults to the old attempt's
+assessment and profile and is always pinned to the installed content.
+`--expected-revision` is required on both: it is the revision the decision was
+made against, and a different current revision is a stale-state conflict
+(exit 4, code `stale_revision`) rather than an action on state the caller never
+saw. A repeat `abandon` at the same expected revision returns the stored record
+with `newly_abandoned: false`. `restart --operation-id` is the idempotency key;
+when omitted the CLI mints one and echoes it as `operation_id` so a retry after
+a failed response can reuse it and receive the original replacement
+(`replayed: true`, `session: null`). `--drill-duration-seconds` requires
+`--mode drill`.
+
+Live-selection policy (D001), identical for CLI and browser: a plain `start`
+never displaces a selected attempt that is still active (exit 4, code
+`live_selection`); the user resumes it, or ends or restarts it first. Naming a
+different attempt with `resume --attempt` while the selected one is live is the
+same conflict. Terminal and non-selected attempts stay discoverable and
+reviewable; an explicit `resume --attempt` also repairs an unreadable pointer.
+Source reset is a different action: it changes only the current attempt's
+source, never its ID, timer, or selection.
+
+Error envelopes carry the exit-code family name (`invalid_input`,
+`session_unavailable`, `illegal_lifecycle`, `candidate_failure`) unless a more
+specific stable code applies: `stale_revision`, `operation_conflict`,
+`live_selection` (all exit 4), and `recovery_pending` (exit 3).
 
 Common options are intentionally after the subcommand. `--workspace-root`
 defaults to the current working directory. `--attempt` must be a canonical,

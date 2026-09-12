@@ -15,9 +15,15 @@ class ExitCode(IntEnum):
 
 
 class DomainError(Exception):
-    """Expected error that can be rendered without a traceback."""
+    """Expected error that can be rendered without a traceback.
+
+    ``code`` is an optional stable machine-readable name more specific than the
+    exit-code family; transports use it when present so a client can tell a
+    stale revision from a busy lock without parsing the message.
+    """
 
     exit_code: ExitCode
+    code: str | None = None
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
@@ -56,6 +62,17 @@ class ReviewPendingError(SessionUnavailableError):
     """A review read observed a changing or unfinished record; retry it."""
 
 
+class RestartRecoveryPendingError(SessionUnavailableError):
+    """A restart passed its commit point but storage did not finish publishing it.
+
+    The operation is durable and will roll forward on the next workspace
+    mutation or explicit recovery; nothing is lost and no second replacement
+    will be created.
+    """
+
+    code = "recovery_pending"
+
+
 class IllegalLifecycleError(DomainError):
     """The requested command is not allowed in the session's lifecycle state."""
 
@@ -68,6 +85,24 @@ class LockUnavailableError(IllegalLifecycleError):
 
 class ScoredSourceChangedError(IllegalLifecycleError):
     """Candidate source changed while it was being scored; nothing was committed."""
+
+
+class RestartConflictError(IllegalLifecycleError):
+    """A restart operation UUID was reused with different arguments."""
+
+    code = "operation_conflict"
+
+
+class StaleRevisionError(IllegalLifecycleError):
+    """The caller's expected attempt revision is not the current one."""
+
+    code = "stale_revision"
+
+
+class LiveSelectionError(IllegalLifecycleError):
+    """A different live attempt is selected; resolve it explicitly first."""
+
+    code = "live_selection"
 
 
 class CandidateFailureError(DomainError):

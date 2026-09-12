@@ -15,7 +15,7 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, Protocol, TextIO
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from . import __version__
 from .application import RuntimeApplication, create_application
@@ -24,7 +24,12 @@ from .errors import (
     ExitCode,
     InvalidInputError,
 )
-from .lifecycle import SubmissionResult, TimeObservation
+from .lifecycle import (
+    AbandonResult,
+    RestartResult,
+    SubmissionResult,
+    TimeObservation,
+)
 from .models import SessionState, SessionStateV2
 from .rendering import ContextResult
 from .web.server import WebServer, WebServerConfig
@@ -58,6 +63,18 @@ class CommandApplication(Protocol):
     def test(self, *, attempt_id: str | None) -> object: ...
 
     def submit(self, *, attempt_id: str | None) -> object: ...
+
+    def abandon(self, *, attempt_id: str | None, expected_revision: int) -> object: ...
+
+    def restart(
+        self,
+        *,
+        attempt_id: str | None,
+        operation_id: str,
+        expected_revision: int,
+        mode: Literal["full", "drill"] | None,
+        drill_duration_seconds: int | None,
+    ) -> object: ...
 
     def context(
         self,
@@ -116,6 +133,45 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         subparser = commands.add_parser(command, help=help_text)
         _add_common_options(subparser)
+
+    abandon = commands.add_parser(
+        "abandon", help="end the selected active attempt without scoring it"
+    )
+    _add_common_options(abandon)
+    abandon.add_argument(
+        "--expected-revision",
+        type=_nonnegative_integer,
+        required=True,
+        metavar="N",
+        help="the attempt revision this decision was made against",
+    )
+
+    restart = commands.add_parser(
+        "restart", help="end the selected active attempt and start a replacement"
+    )
+    _add_common_options(restart)
+    restart.add_argument(
+        "--expected-revision",
+        type=_nonnegative_integer,
+        required=True,
+        metavar="N",
+        help="the attempt revision this decision was made against",
+    )
+    restart.add_argument(
+        "--operation-id",
+        type=_operation_id,
+        metavar="UUID",
+        help=(
+            "idempotency key; repeat it to get the same replacement back "
+            "(default: a new UUID, echoed in the result)"
+        ),
+    )
+    restart.add_argument(
+        "--mode",
+        choices=("full", "drill"),
+        help="replacement profile (default: the old attempt's profile)",
+    )
+    restart.add_argument("--drill-duration-seconds", type=_positive_integer)
 
     context = commands.add_parser("context", help="show safe selected attempt context")
     _add_common_options(context)
@@ -226,6 +282,26 @@ def serialize_result(result: object) -> Mapping[str, object]:
             "score": result.score.to_dict(),
             "newly_submitted": result.newly_submitted,
         }
+    if isinstance(result, AbandonResult):
+        return result.to_dict()
+    if isinstance(result, RestartResult):
+        return {
+            "operation_id": result.operation_id,
+            "old_attempt_id": result.old_attempt_id,
+            "replacement_attempt_id": result.replacement_attempt_id,
+            "committed_at": result.committed_at.isoformat(),
+            "replayed": result.replayed,
+            "session": (
+                None
+                if result.replacement_state is None
+                else result.replacement_state.to_dict()
+            ),
+            "abandoned_session": (
+                None
+                if result.abandoned_state is None
+                else result.abandoned_state.to_dict()
+            ),
+        }
     if isinstance(result, ContextResult):
         return result.to_dict()
     if isinstance(result, Mapping):
@@ -271,6 +347,19 @@ def _dispatch(application: CommandApplication, namespace: argparse.Namespace) ->
         )
     if command == "task":
         return application.task(attempt_id=namespace.attempt_id, level=namespace.level)
+    if command == "abandon":
+        return application.abandon(
+            attempt_id=namespace.attempt_id,
+            expected_revision=namespace.expected_revision,
+        )
+    if command == "restart":
+        return application.restart(
+            attempt_id=namespace.attempt_id,
+            operation_id=namespace.operation_id or str(uuid4()),
+            expected_revision=namespace.expected_revision,
+            mode=namespace.mode,
+            drill_duration_seconds=namespace.drill_duration_seconds,
+        )
     if command == "context":
         return application.context(
             attempt_id=namespace.attempt_id,
@@ -287,6 +376,12 @@ def _validate_arguments(namespace: argparse.Namespace) -> None:
         and namespace.drill_duration_seconds is not None
     ):
         raise InvalidInputError("full mode does not accept a drill duration")
+    if (
+        namespace.command == "restart"
+        and namespace.mode != "drill"
+        and namespace.drill_duration_seconds is not None
+    ):
+        raise InvalidInputError("a drill duration requires --mode drill")
 
 
 def _default_application(workspace_root: Path) -> RuntimeApplication:
@@ -351,16 +446,32 @@ def _serialize_document(
         raise _SerializationError from error
 
 
-def _attempt_id(value: str) -> str:
+def _canonical_uuid(value: str, label: str) -> str:
     try:
         parsed = UUID(value)
     except ValueError as error:
-        raise argparse.ArgumentTypeError(
-            "attempt ID must be a canonical UUID"
-        ) from error
+        raise argparse.ArgumentTypeError(f"{label} must be a canonical UUID") from error
     if str(parsed) != value:
-        raise argparse.ArgumentTypeError("attempt ID must be a canonical UUID")
+        raise argparse.ArgumentTypeError(f"{label} must be a canonical UUID")
     return value
+
+
+def _attempt_id(value: str) -> str:
+    return _canonical_uuid(value, "attempt ID")
+
+
+def _operation_id(value: str) -> str:
+    return _canonical_uuid(value, "operation ID")
+
+
+def _nonnegative_integer(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a non-negative integer") from error
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return parsed
 
 
 def _workspace_root(value: str) -> Path:
@@ -409,6 +520,9 @@ def _error_document(code: str, message: str) -> dict[str, object]:
 
 
 def _error_code(error: DomainError) -> str:
+    specific = getattr(error, "code", None)
+    if isinstance(specific, str) and specific:
+        return specific
     return {
         ExitCode.INVALID_INPUT: "invalid_input",
         ExitCode.SESSION_UNAVAILABLE: "session_unavailable",

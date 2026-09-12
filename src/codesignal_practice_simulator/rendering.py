@@ -16,6 +16,7 @@ from uuid import uuid4
 from .errors import SessionUnavailableError
 from .filesystem import Filesystem, LocalFilesystem
 from .models import (
+    ABANDONED,
     ACTIVE,
     EXPIRED,
     SUBMITTED,
@@ -301,7 +302,7 @@ def _next_legal_commands(state: SessionRecord) -> list[str]:
         )
     elif state.status == EXPIRED:
         commands.append(f"{prefix} submit {selected}")
-    elif state.status != SUBMITTED:
+    elif state.status not in (SUBMITTED, ABANDONED):
         _unavailable()
     return commands
 
