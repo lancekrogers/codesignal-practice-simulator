@@ -30,6 +30,7 @@ from .errors import (
     StaleRevisionError,
 )
 from .filesystem import Filesystem, LocalFilesystem
+from .input_providers import InputProvider, InputProviders
 from .models import (
     ACTIVE,
     ACTIVE_POINTER_SCHEMA_VERSION,
@@ -136,9 +137,14 @@ class WorkspaceManager:
         filesystem: Filesystem | None = None,
         persistence: Persistence | None = None,
         registry: AssessmentRegistry = DEFAULT_ASSESSMENT_REGISTRY,
+        providers: InputProviders | None = None,
     ) -> None:
         self.workspace_root = workspace_root.resolve()
         self.cache = cache
+        # Providers own input validation, identity and staging per definition
+        # kind (D003). The default set wraps this cache for fetched content and
+        # adds installed originals when the package bundles any.
+        self.providers = InputProviders.default(cache) if providers is None else providers
         if persistence is not None:
             if filesystem is None:
                 filesystem = persistence.filesystem
@@ -181,7 +187,19 @@ class WorkspaceManager:
             raise InvalidInputError(
                 "assessment metadata does not match its registry entry"
             )
-        return self.cache.pinned_assessment(definition)
+        return self._provider(definition).pinned_assessment(definition)
+
+    def validate_inputs(self, definition: AssessmentDefinition) -> None:
+        """Fail before any mutation when a definition's inputs are missing or tampered.
+
+        Only the selected definition's provider is consulted: an original
+        exercise never requires the fetched File Storage cache, and File Storage
+        keeps its complete-cache validation unchanged.
+        """
+        self._provider(definition).validate(definition, self.filesystem)
+
+    def _provider(self, definition: AssessmentDefinition) -> InputProvider:
+        return self.providers.for_definition(definition)
 
     def create_attempt(
         self,
@@ -191,8 +209,8 @@ class WorkspaceManager:
         before_publish: Callable[[Path, ActivePointer | None], None] | None = None,
     ) -> Path:
         """Build an attempt, optionally checking selection before publication."""
-        self._validate_creation_state(state)
-        self.cache.validate(self.filesystem)
+        definition = self._validate_creation_state(state)
+        self.validate_inputs(definition)
         attempts = self.attempts_directory
         self.filesystem.mkdir(attempts, parents=True, exist_ok=True)
         with self.persistence.workspace_lock(attempts):
@@ -203,12 +221,13 @@ class WorkspaceManager:
                 before_publish=before_publish,
             )
 
-    def _validate_creation_state(self, state: SessionRecord) -> None:
+    def _validate_creation_state(self, state: SessionRecord) -> AssessmentDefinition:
         """Validate either schema; LifecycleService creates only session/v2.
 
         session/v1 creation remains for callers that stage legacy fixtures. A v2
-        identity must equal the one computed from this manifest, so callers
-        cannot pin content that the staged bytes were not verified against.
+        identity must equal the one its provider computes from declared hashes,
+        so callers cannot pin content that the staged bytes were not verified
+        against.
         """
         if isinstance(state, SessionStateV2):
             if not isinstance(state.assessment, PinnedAssessment):
@@ -218,7 +237,7 @@ class WorkspaceManager:
                     "a new attempt requires a pinned content identity"
                 )
             definition = self.registry.require(state.assessment.assessment_id)
-            if state.assessment != self.cache.pinned_assessment(definition):
+            if state.assessment != self._provider(definition).pinned_assessment(definition):
                 raise InvalidInputError(
                     "assessment identity does not match the installed content"
                 )
@@ -232,6 +251,7 @@ class WorkspaceManager:
             raise InvalidInputError("session is invalid")
         if not definition.supports_profile(state.profile.profile_id):
             raise InvalidInputError("assessment does not support the selected profile")
+        return definition
 
     def _create_attempt_locked(
         self,
@@ -328,7 +348,9 @@ class WorkspaceManager:
             raise SessionUnavailableError(
                 f"selected attempt is unavailable: {request.old_attempt_id}"
             )
-        self.cache.validate(self.filesystem)
+        # The replacement's inputs are validated before the old attempt is
+        # touched or any commit intent exists (D003: failure before mutation).
+        self.validate_inputs(self.registry.require(request.assessment.assessment_id))
         with self.persistence.workspace_lock(attempts):
             self._reconcile_locked(attempts)
             completed = self.persistence.read_restart_completion(
@@ -781,9 +803,9 @@ class WorkspaceManager:
         )
         try:
             definition = self.registry.require(state.assessment.assessment_id)
-        except InvalidInputError as error:
+            installed = self._provider(definition).pinned_assessment(definition)
+        except (InvalidInputError, FixtureSetupRequiredError) as error:
             raise AssessmentVersionUnavailableError(unavailable) from error
-        installed = self.cache.pinned_assessment(definition)
         if (
             state.assessment.content_version != installed.content_version
             or state.assessment.content_digest != installed.content_digest
@@ -802,12 +824,10 @@ class WorkspaceManager:
         event: EventRecordUnion | None = None,
     ) -> None:
         definition = self.registry.require(state.assessment.assessment_id)
-        source_directory = self.cache.root.joinpath(
-            *definition.cache_directory.split("/")
-        )
+        provider = self._provider(definition)
         with self.persistence.attempt_lock(staging):
             for filename in definition.copied_filenames:
-                self.filesystem.copyfile(source_directory / filename, staging / filename)
+                provider.stage_file(definition, filename, staging / filename, self.filesystem)
             self._verify_staged_inputs(staging, definition)
             write_initial_source_baseline(
                 self.filesystem,
@@ -856,12 +876,13 @@ class WorkspaceManager:
     ) -> None:
         """Prove staged copies are the declared bytes an identity describes.
 
-        The cache was validated before staging, but it can change before the
-        copy. Checking the transaction-owned copies closes that gap for this
-        attempt; a mismatch aborts creation through the normal rollback.
+        The provider's source was validated before staging, but it can change
+        before the copy. Checking the transaction-owned copies closes that gap
+        for this attempt; a mismatch aborts creation through the normal rollback.
         """
+        provider = self._provider(definition)
         for filename in definition.copied_filenames:
-            expected = self.cache.declared_hash(definition, filename)
+            expected = provider.declared_hash(definition, filename)
             try:
                 actual = hashlib.sha256(
                     self.filesystem.read_bytes(staging / filename)

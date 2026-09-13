@@ -76,6 +76,52 @@ Recovery rejects duplicate event IDs or a conflicting submitted event instead
 of manufacturing another submission. A completed repeat `submit` has no marker
 and is byte-identical: it does not score or write.
 
+## Input providers
+
+Each registered assessment declares a `provider_kind` (D003). The provider
+validates the assessment's inputs before any workspace mutation, computes the
+content identity a new attempt pins, and stages only the allowlisted
+candidate-facing files (four prompts, `simulation.py`, `test_simulation.py`).
+
+- `pinned-fetched` (File Storage): the existing seven-file fixture cache and
+  its provenance validation, unchanged. `content_version` is
+  `upstream-<manifest commit>` and the digest is the one described above; the
+  cache must be fetched before an attempt can start.
+- `packaged-original`: exercises bundled in the installed package under
+  `resources/<input directory>/` with a `content-manifest.json`
+  (`assessment-package/v1`: `assessment_id`, a slug `content_version`, and the
+  SHA-256 of every candidate-facing file). Validation requires exactly those
+  files plus the manifest in the directory, so development solutions can never
+  be staged; every byte is checked against the manifest before staging and the
+  staged copies are checked again before the attempt exists. Originals start
+  offline and never require the fetched cache.
+
+Only the selected assessment's provider runs. A missing or tampered input,
+an unknown provider kind, or an unsupported profile is exit 3 (or 2 for the
+profile) before any attempt, staging directory, restart journal or abandonment
+marker is written (the shared `attempts/` root and its lock file may already
+exist); the fetch remedy is suggested only for fetched content.
+
+## Assessment catalog
+
+`codesignal-sim catalog` and `GET /api/catalog` enumerate every installed
+definition from the registry (stable ID order) with `assessment_id`,
+`display_name`, `description`, `level_count`, `levels`, `profiles`,
+`provider_kind`, the `content_version` and `content_digest` a new attempt
+would pin (declared by the manifest, so known before any fetch), and readiness:
+`available` plus a `setup` reason when not — `fetch_required` (fetched content
+whose cache is absent or invalid), `packaged_content_invalid` (a bundled
+original whose files do not match their manifest), or `provider_unavailable`
+(no provider for that kind in this installation). Enumeration validates inputs
+by reading them and writes nothing; `setup_message` never contains a path.
+`GET /api/bootstrap` carries the same list as `catalog` beside its existing
+single-assessment keys, which describe the primary (File Storage when
+installed) definition.
+
+Bundled originals ship under `resources/assessments/<id>/` and the archive
+checks (`just check wheel`) accept exactly the six candidate-facing files plus
+`content-manifest.json` there; any other member fails the build check.
+
 ## Submission review record
 
 A submission publishes `review.json` (`review/v1`) once and never rewrites it.

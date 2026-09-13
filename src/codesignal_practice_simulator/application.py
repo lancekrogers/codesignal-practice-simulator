@@ -10,10 +10,14 @@ from typing import Literal
 
 from .assessments import (
     AssessmentDefinition,
+    AssessmentRegistry,
     DEFAULT_ASSESSMENT_REGISTRY,
+    PINNED_FETCHED,
 )
 from .attempt_history import AttemptHistoryService, HistoryFilters, HistoryPage
+from .input_providers import InputProviders
 from .attempt_reviews import AttemptReview, AttemptReviewService
+from .catalog import Catalog, CatalogEntry, CatalogService
 from .candidate_document_storage import read_source, safe_candidate_path
 from .candidate_documents import (
     CandidateDocument,
@@ -82,6 +86,8 @@ class RuntimeApplication:
         persistence: Persistence | None = None,
         scorer_factory: ScorerFactory | None = None,
         cache: ValidatedFixtureCache | None = None,
+        registry: AssessmentRegistry | None = None,
+        providers: InputProviders | None = None,
     ) -> None:
         _validate_root(workspace_root, "workspace root")
         resolved_workspace = workspace_root.resolve()
@@ -104,8 +110,10 @@ class RuntimeApplication:
             cache,
             filesystem=filesystem,
             persistence=persistence,
+            registry=DEFAULT_ASSESSMENT_REGISTRY if registry is None else registry,
+            providers=providers,
         )
-        self.registry = DEFAULT_ASSESSMENT_REGISTRY
+        self.registry = self.workspace.registry
         self.clock = UTCClock() if clock is None else clock
         self.scorer_factory = (
             _default_scorer_factory if scorer_factory is None else scorer_factory
@@ -128,6 +136,7 @@ class RuntimeApplication:
         self.reviews = AttemptReviewService(
             resolved_workspace / ATTEMPTS_DIRECTORY, persistence=persistence
         )
+        self.catalogs = CatalogService(self.workspace)
         self._action_lock = threading.RLock()
         self._practice_results: dict[str, PracticeResult] = {}
 
@@ -219,6 +228,11 @@ class RuntimeApplication:
                 self._refresh_derived_status(result.replacement_attempt_id)
             return result
 
+    def catalog(self) -> Catalog:
+        """List installed assessments with readiness; reads inputs, writes nothing."""
+        with self._action_lock:
+            return self.catalogs.list_assessments()
+
     def bootstrap(self) -> dict[str, object]:
         """Return browser entry metadata and the currently selected session."""
         with self._action_lock:
@@ -230,25 +244,22 @@ class RuntimeApplication:
             if pointer is not None:
                 selected = self.status(attempt_id=pointer.attempt_id)
                 selected_time = self.time(attempt_id=pointer.attempt_id)
-            definition = self.registry.require("file_storage")
+            catalog = self.catalogs.list_assessments()
+            # The single-assessment keys stay for the current browser entry flow;
+            # they describe the registry's primary definition (File Storage when
+            # installed), and ``catalog`` carries every installed assessment.
+            primary = self._primary_entry(catalog)
             return {
-            "assessment": definition.metadata.to_dict(),
+            "assessment": {
+                "assessment_id": primary.assessment_id,
+                "display_name": primary.display_name,
+                "level_count": primary.level_count,
+            },
             "levels": [
-                {"level": level, "label": f"Level {level}"}
-                for level in definition.level_groups
+                {"level": level, "label": f"Level {level}"} for level in primary.levels
             ],
-            "profiles": [
-                {
-                    "mode": "full",
-                    "profile_id": "full-90m",
-                    "duration_seconds": 5400,
-                },
-                {
-                    "mode": "drill",
-                    "profile_id": "drill-30m",
-                    "duration_seconds": 1800,
-                },
-            ],
+            "profiles": [dict(profile) for profile in primary.profiles],
+            "catalog": catalog.to_dict()["assessments"],
             "rules": [
                 "The timer is authoritative and cannot be paused.",
                 "Source changes are saved with optimistic concurrency.",
@@ -260,6 +271,13 @@ class RuntimeApplication:
                 "remaining_seconds": selected_time.remaining_seconds,
             },
             }
+
+    @staticmethod
+    def _primary_entry(catalog: Catalog) -> CatalogEntry:
+        for entry in catalog.entries:
+            if entry.assessment_id == "file_storage":
+                return entry
+        return catalog.entries[0]
 
     def resume(self, *, attempt_id: str | None) -> SessionRecord:
         with self._action_lock:
@@ -395,11 +413,14 @@ class RuntimeApplication:
         drill_duration_seconds: int | None,
     ) -> SessionRecord:
         definition = self.registry.require(assessment)
-        # ``create_attempt`` validates the same complete cache again immediately
-        # before it creates any workspace path, closing the validation-to-write gap.
+        # ``create_attempt`` validates the selected definition's inputs again
+        # immediately before it creates any workspace path, closing the
+        # validation-to-write gap. Only fetched content has a fetch remedy.
         try:
-            self.workspace.cache.validate(self.workspace.filesystem)
+            self.workspace.validate_inputs(definition)
         except FixtureSetupRequiredError as error:
+            if definition.provider_kind != PINNED_FETCHED:
+                raise
             raise FixtureSetupRequiredError(
                 f"{error.message}; run "
                 "`codesignal-sim fetch --workspace-root "

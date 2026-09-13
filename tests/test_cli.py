@@ -267,6 +267,7 @@ class CliTests(unittest.TestCase):
                 "restart",
                 "history",
                 "review",
+                "catalog",
                 "context",
                 "web",
             },
@@ -274,7 +275,7 @@ class CliTests(unittest.TestCase):
         for name, command in commands.items():
             options = {option for action in command._actions for option in action.option_strings}
             self.assertTrue({"--json", "--workspace-root"} <= options, name)
-            if name in ("fetch", "start", "web", "history"):
+            if name in ("fetch", "start", "web", "history", "catalog"):
                 self.assertNotIn("--attempt", options)
             else:
                 self.assertIn("--attempt", options)
@@ -531,10 +532,13 @@ class RuntimeCliTests(unittest.TestCase):
         return code, json.loads(output.getvalue())
 
     def runtime_application(self, workspace_root: Path) -> RuntimeApplication:
-        """Use synthetic fixture bytes while exercising the production adapter."""
-        application = RuntimeApplication(workspace_root, clock=self.clock)
-        application.workspace.cache = self.runtime_cache
-        return application
+        """Use synthetic fixture bytes while exercising the production adapter.
+
+        The cache is injected at construction: input providers are built from it
+        there, so swapping the attribute afterwards would leave the fetched
+        provider pointed at the packaged manifest's cache location.
+        """
+        return RuntimeApplication(workspace_root, clock=self.clock, cache=self.runtime_cache)
 
     @staticmethod
     def session(document: dict[str, object]) -> dict[str, object]:

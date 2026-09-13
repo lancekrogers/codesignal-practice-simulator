@@ -17,12 +17,23 @@ CONTENT_IDENTITY_SCHEMA_VERSION = "assessment-content/v1"
 # for N in 1..4 (scoring.py bootstrap). Content pinned to another contract is not
 # scorable by this release.
 RUNNER_CONTRACT = "unittest-groups-v1"
+# Input provider kinds (D003). The provider that owns a kind validates the
+# source before staging and computes the identity new attempts pin.
+PINNED_FETCHED = "pinned-fetched"
+PACKAGED_ORIGINAL = "packaged-original"
+PROVIDER_KINDS = frozenset((PINNED_FETCHED, PACKAGED_ORIGINAL))
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_DIRECTORY_SEGMENT = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 
 
 @dataclass(frozen=True, slots=True)
 class AssessmentDefinition:
-    """The copied inputs and supported runtime contract for one assessment."""
+    """The copied inputs and supported runtime contract for one assessment.
+
+    ``cache_directory`` is the definition's input directory relative to its
+    provider's root: the fetched fixture cache for ``pinned-fetched`` content,
+    the installed resources package for ``packaged-original`` content.
+    """
 
     metadata: AssessmentMetadata
     cache_directory: str
@@ -32,10 +43,23 @@ class AssessmentDefinition:
     level_groups: tuple[int, ...]
     profile_ids: frozenset[str]
     runner_contract: str = RUNNER_CONTRACT
+    provider_kind: str = PINNED_FETCHED
+    description: str = ""
 
     def __post_init__(self) -> None:
-        if not self.cache_directory or self.cache_directory.startswith("/"):
+        if (
+            not isinstance(self.cache_directory, str)
+            or not self.cache_directory
+            or any(
+                not _DIRECTORY_SEGMENT.fullmatch(segment)
+                for segment in self.cache_directory.split("/")
+            )
+        ):
             raise InvalidInputError("assessment cache directory is invalid")
+        if self.provider_kind not in PROVIDER_KINDS:
+            raise InvalidInputError("assessment provider kind is unsupported")
+        if not isinstance(self.description, str):
+            raise InvalidInputError("assessment description is invalid")
         if self.level_groups != (1, 2, 3, 4):
             raise InvalidInputError("assessment must define groups 1 through 4")
         if not self.prompt_filenames or any(
@@ -119,6 +143,10 @@ FILE_STORAGE = AssessmentDefinition(
     level_groups=(1, 2, 3, 4),
     profile_ids=frozenset((FULL_PROFILE, DRILL_PROFILE)),
     runner_contract=RUNNER_CONTRACT,
+    provider_kind=PINNED_FETCHED,
+    description=(
+        "Fetched File Storage practice assessment; requires the pinned fixture cache."
+    ),
 )
 
 
@@ -133,6 +161,13 @@ class AssessmentRegistry:
         }
         if len(self._definitions) != len(definitions):
             raise InvalidInputError("assessment registry contains duplicate IDs")
+        directories = {definition.cache_directory for definition in definitions}
+        if len(directories) != len(definitions):
+            raise InvalidInputError("assessment registry contains duplicate input directories")
+
+    def definitions(self) -> tuple[AssessmentDefinition, ...]:
+        """Return every installed definition in stable ID order."""
+        return tuple(self._definitions[key] for key in sorted(self._definitions))
 
     def require(self, assessment_id: str) -> AssessmentDefinition:
         if not isinstance(assessment_id, str):
@@ -152,6 +187,9 @@ __all__ = [
     "CONTENT_IDENTITY_SCHEMA_VERSION",
     "DEFAULT_ASSESSMENT_REGISTRY",
     "FILE_STORAGE",
+    "PACKAGED_ORIGINAL",
+    "PINNED_FETCHED",
+    "PROVIDER_KINDS",
     "RUNNER_CONTRACT",
     "content_identity",
 ]

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import signal
 import shutil
 import subprocess
@@ -32,6 +33,24 @@ PACKAGE_NAME = "codesignal_practice_simulator"
 STATIC = PROJECT / "src" / "codesignal_practice_simulator" / "web" / "static"
 STATIC_PREFIX = f"{PACKAGE_NAME}/web/static/"
 DECLARED_RUNTIME_RESOURCES = frozenset({"resources/fixture-manifest.json"})
+# Bundled original exercises live at resources/assessments/<id>/ and may contain
+# exactly the candidate-facing files plus their content manifest. Anything else
+# under that prefix (a solution, a note, a nested directory) fails the archive.
+PACKAGED_ASSESSMENTS_PREFIX = "resources/assessments/"
+# Same shape the registry enforces on input directory segments: no dots, no
+# uppercase, so ".." or "Records_Demo" never match.
+PACKAGED_ASSESSMENT_DIRECTORY = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
+PACKAGED_ASSESSMENT_MEMBERS = frozenset(
+    {
+        "level1.md",
+        "level2.md",
+        "level3.md",
+        "level4.md",
+        "simulation.py",
+        "test_simulation.py",
+        "content-manifest.json",
+    }
+)
 FORBIDDEN_ARCHIVE_PARTS = frozenset(
     {
         ".cache",
@@ -158,6 +177,20 @@ def _assert_runtime_package_resources(
         if prefix not in member:
             continue
         relative = member.split(prefix, 1)[1]
+        if relative.startswith(PACKAGED_ASSESSMENTS_PREFIX):
+            # Checked before the generic .py rule so a bundled solution.py can
+            # never ride along as ordinary package code.
+            parts = relative[len(PACKAGED_ASSESSMENTS_PREFIX):].split("/")
+            if (
+                len(parts) != 2
+                or PACKAGED_ASSESSMENT_DIRECTORY.fullmatch(parts[0]) is None
+                or parts[1] not in PACKAGED_ASSESSMENT_MEMBERS
+            ):
+                raise RuntimeError(
+                    "archive contains unexpected packaged assessment member: "
+                    f"{relative}"
+                )
+            continue
         if (
             relative.endswith(".py")
             or static_prefix in member

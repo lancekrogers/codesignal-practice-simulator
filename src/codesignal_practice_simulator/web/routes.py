@@ -120,6 +120,10 @@ class RouteHandler:
     ) -> HttpResponse:
         if path == "/api/bootstrap":
             return self._read(method, "GET", query, self.application.bootstrap)
+        if path == "/api/catalog":
+            return self._read(
+                method, "GET", query, lambda: self.application.catalog().to_dict()
+            )
         if path == "/api/attempts":
             if method == "GET":
                 return self._list_attempts(query)

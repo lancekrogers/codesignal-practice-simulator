@@ -93,6 +93,8 @@ class CommandApplication(Protocol):
 
     def review(self, *, attempt_id: str, include_source: bool) -> object: ...
 
+    def catalog(self) -> object: ...
+
 
 ApplicationFactory = Callable[[Path], CommandApplication]
 ResultSerializer = Callable[[object], Mapping[str, object]]
@@ -182,6 +184,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="replacement profile (default: the old attempt's profile)",
     )
     restart.add_argument("--drill-duration-seconds", type=_positive_integer)
+
+    catalog = commands.add_parser(
+        "catalog", help="list installed assessments and whether each can start"
+    )
+    _add_common_options(catalog, attempt=False)
 
     history = commands.add_parser(
         "history", help="list stored attempts from metadata, newest first"
@@ -361,6 +368,8 @@ def _dispatch(application: CommandApplication, namespace: argparse.Namespace) ->
     command = namespace.command
     if command == "fetch":
         return application.fetch(source=namespace.source)
+    if command == "catalog":
+        return application.catalog()
     if command == "start":
         return application.start(
             assessment=namespace.assessment,
