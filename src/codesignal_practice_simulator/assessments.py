@@ -150,6 +150,37 @@ FILE_STORAGE = AssessmentDefinition(
 )
 
 
+def _original(assessment_id: str, display_name: str, description: str) -> AssessmentDefinition:
+    """A bundled original exercise following the shared content conventions."""
+    return AssessmentDefinition(
+        metadata=AssessmentMetadata(assessment_id, display_name),
+        cache_directory=f"assessments/{assessment_id}",
+        prompt_filenames=("level1.md", "level2.md", "level3.md", "level4.md"),
+        candidate_filename="simulation.py",
+        test_filename="test_simulation.py",
+        level_groups=(1, 2, 3, 4),
+        profile_ids=frozenset((FULL_PROFILE, DRILL_PROFILE)),
+        runner_contract=RUNNER_CONTRACT,
+        provider_kind=PACKAGED_ORIGINAL,
+        description=description,
+    )
+
+
+IN_MEMORY_RECORDS = _original(
+    "in_memory_records",
+    "In-Memory Records",
+    "Original offline exercise: a record store with fields, deterministic scans, "
+    "field expiry, and time-consistent snapshots.",
+)
+
+ACCOUNT_LEDGER = _original(
+    "account_ledger",
+    "Account Ledger",
+    "Original offline exercise: accounts and transfers, outgoing rankings, "
+    "scheduled transfers, and historical balances with account closure.",
+)
+
+
 class AssessmentRegistry:
     """Look up the deliberately small set of supported assessments."""
 
@@ -178,15 +209,19 @@ class AssessmentRegistry:
             raise InvalidInputError(f"unknown assessment: {assessment_id}") from error
 
 
-DEFAULT_ASSESSMENT_REGISTRY = AssessmentRegistry((FILE_STORAGE,))
+DEFAULT_ASSESSMENT_REGISTRY = AssessmentRegistry(
+    (FILE_STORAGE, IN_MEMORY_RECORDS, ACCOUNT_LEDGER)
+)
 
 
 __all__ = [
+    "ACCOUNT_LEDGER",
     "AssessmentDefinition",
     "AssessmentRegistry",
     "CONTENT_IDENTITY_SCHEMA_VERSION",
     "DEFAULT_ASSESSMENT_REGISTRY",
     "FILE_STORAGE",
+    "IN_MEMORY_RECORDS",
     "PACKAGED_ORIGINAL",
     "PINNED_FETCHED",
     "PROVIDER_KINDS",

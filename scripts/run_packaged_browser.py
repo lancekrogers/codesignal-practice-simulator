@@ -36,6 +36,8 @@ DECLARED_RUNTIME_RESOURCES = frozenset({"resources/fixture-manifest.json"})
 # Bundled original exercises live at resources/assessments/<id>/ and may contain
 # exactly the candidate-facing files plus their content manifest. Anything else
 # under that prefix (a solution, a note, a nested directory) fails the archive.
+# Development oracle filenames, wherever they might appear in an archive.
+FORBIDDEN_ARCHIVE_SUFFIXES = ("_reference.py", "_solution.py", "_oracle.py")
 PACKAGED_ASSESSMENTS_PREFIX = "resources/assessments/"
 # Same shape the registry enforces on input directory segments: no dots, no
 # uppercase, so ".." or "Records_Demo" never match.
@@ -66,6 +68,7 @@ FORBIDDEN_ARCHIVE_PARTS = frozenset(
         "node_modules",
         "npm-cache",
         "npm_cache",
+        "oracles",
         "playwright-report",
         "playwright-reports",
         "playwright-cache",
@@ -157,6 +160,8 @@ def _assert_archive_paths(members: list[str]) -> None:
         parts = {part.lower() for part in member.replace("\\", "/").split("/")}
         if parts & FORBIDDEN_ARCHIVE_PARTS:
             raise RuntimeError(f"archive contains forbidden path: {member}")
+        if member.lower().endswith(FORBIDDEN_ARCHIVE_SUFFIXES):
+            raise RuntimeError(f"archive contains a development oracle: {member}")
 
 
 def _static_members(members: list[str], prefix: str) -> set[str]:

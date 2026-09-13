@@ -1,0 +1,13 @@
+{
+  "assessment_id": "in_memory_records",
+  "content_version": "records-1",
+  "files": {
+    "level1.md": "e8086fbb90d35164796118e851505bae983e732fb63df00bf8a753e29d0a85c7",
+    "level2.md": "c9aaaa88b7d97d944fb27e7c0e1b623c2657e2df5f4417066a15d864326fefb5",
+    "level3.md": "a3ae73cf62678d30df4272267d8b18332878489ce203c80b1797b4dcef88cd24",
+    "level4.md": "26f4c8de8aa6aeb0dbac74a52f1e9fbe985f6d523b82bbfda00f15856f41681e",
+    "simulation.py": "22724b92e8b20c9ead51c9e4c739d1c669e5948004186f9499137abb1524eebb",
+    "test_simulation.py": "a8de921f5937417f056b465fd48e477fec48f3a033c2fc00e0681e567bafecaf"
+  },
+  "schema_version": "assessment-package/v1"
+}

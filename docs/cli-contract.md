@@ -121,6 +121,15 @@ installed) definition.
 Bundled originals ship under `resources/assessments/<id>/` and the archive
 checks (`just check wheel`) accept exactly the six candidate-facing files plus
 `content-manifest.json` there; any other member fails the build check.
+`just check content` validates the bundled directories in the checkout: exact
+file set, manifest hashes, registry agreement, and a `test_simulation.py` that
+defines exactly `test_group_1` through `test_group_4` importing only `unittest`
+and `simulation`.
+
+Two original exercises are bundled: `in_memory_records` (In-Memory Records)
+and `account_ledger` (Account Ledger), both specified in `docs/content/`. They
+start offline without the fetched File Storage cache. Their development
+oracles live under `tests/oracles/` and are never packaged.
 
 ## Submission review record
 

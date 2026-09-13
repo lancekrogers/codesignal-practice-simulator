@@ -240,9 +240,15 @@ class CatalogRouteTests(WebServerTestCase):
         status, _headers, document = self.request("GET", "/api/catalog")
         self.assertEqual(status, 200)
         assessments = document["data"]["assessments"]
-        self.assertEqual([entry["assessment_id"] for entry in assessments], ["file_storage"])
-        self.assertTrue(assessments[0]["available"])
-        self.assertEqual(assessments[0]["content_version"], "upstream-0000000")
+        # The default registry: fetched File Storage plus the two bundled originals.
+        self.assertEqual(
+            [entry["assessment_id"] for entry in assessments],
+            ["account_ledger", "file_storage", "in_memory_records"],
+        )
+        by_id = {entry["assessment_id"]: entry for entry in assessments}
+        self.assertTrue(all(entry["available"] for entry in assessments), assessments)
+        self.assertEqual(by_id["file_storage"]["content_version"], "upstream-0000000")
+        self.assertEqual(by_id["in_memory_records"]["provider_kind"], "packaged-original")
         self.assertNotIn(str(self.workspace), json.dumps(document))
 
         status, _headers, bootstrap = self.request("GET", "/api/bootstrap")
@@ -287,6 +293,18 @@ class PackagingAllowlistTests(unittest.TestCase):
             with self.subTest(member=member):
                 with self.assertRaisesRegex(RuntimeError, "unexpected packaged assessment member"):
                     self.check([f"{PACKAGE}/{member}"])
+
+    def test_archive_paths_reject_development_oracles(self) -> None:
+        good = [f"{PACKAGE}/__init__.py", f"{PACKAGE}/resources/assessments/records_demo/simulation.py"]
+        run_packaged_browser._assert_archive_paths(good)
+        for member in (
+            "package-0.1/tests/oracles/__init__.py",
+            f"{PACKAGE}/account_ledger_reference.py",
+            f"{PACKAGE}/resources/assessments/records_demo/records_solution.py",
+        ):
+            with self.subTest(member=member):
+                with self.assertRaisesRegex(RuntimeError, "forbidden path|development oracle"):
+                    run_packaged_browser._assert_archive_paths([member])
 
     def test_pyproject_ships_bundled_assessment_data(self) -> None:
         configuration = (PROJECT / "pyproject.toml").read_text(encoding="utf-8")
