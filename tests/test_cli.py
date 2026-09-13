@@ -265,6 +265,8 @@ class CliTests(unittest.TestCase):
                 "submit",
                 "abandon",
                 "restart",
+                "history",
+                "review",
                 "context",
                 "web",
             },
@@ -272,7 +274,7 @@ class CliTests(unittest.TestCase):
         for name, command in commands.items():
             options = {option for action in command._actions for option in action.option_strings}
             self.assertTrue({"--json", "--workspace-root"} <= options, name)
-            if name in ("fetch", "start", "web"):
+            if name in ("fetch", "start", "web", "history"):
                 self.assertNotIn("--attempt", options)
             else:
                 self.assertIn("--attempt", options)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 import threading
@@ -12,6 +12,8 @@ from .assessments import (
     AssessmentDefinition,
     DEFAULT_ASSESSMENT_REGISTRY,
 )
+from .attempt_history import AttemptHistoryService, HistoryFilters, HistoryPage
+from .attempt_reviews import AttemptReview, AttemptReviewService
 from .candidate_document_storage import read_source, safe_candidate_path
 from .candidate_documents import (
     CandidateDocument,
@@ -118,6 +120,14 @@ class RuntimeApplication:
         self.prompts = PromptService(self.workspace)
         self.contexts = AttemptContextService(self.workspace)
         self.derived_status = DerivedStatusService(self.workspace)
+        self.history = AttemptHistoryService(
+            resolved_workspace / ATTEMPTS_DIRECTORY,
+            persistence=persistence,
+            clock=self.clock,
+        )
+        self.reviews = AttemptReviewService(
+            resolved_workspace / ATTEMPTS_DIRECTORY, persistence=persistence
+        )
         self._action_lock = threading.RLock()
         self._practice_results: dict[str, PracticeResult] = {}
 
@@ -506,6 +516,22 @@ class RuntimeApplication:
             definition = self.workspace.definition_for_persisted_session(state)
             path = safe_candidate_path(attempt, definition.candidate_filename)
             return etag_for(read_source(self.workspace.filesystem, path))
+
+    def list_attempts(
+        self,
+        *,
+        filters: HistoryFilters | Mapping[str, object] | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> HistoryPage:
+        """List stored attempts from metadata only; never selects or repairs."""
+        with self._action_lock:
+            return self.history.list_attempts(filters=filters, cursor=cursor, limit=limit)
+
+    def review(self, *, attempt_id: str, include_source: bool = True) -> AttemptReview:
+        """Read one attempt's stored review by explicit ID; never selects or repairs."""
+        with self._action_lock:
+            return self.reviews.get_review(attempt_id, include_source=include_source)
 
     def context(
         self,

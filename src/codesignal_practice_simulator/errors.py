@@ -61,6 +61,8 @@ class AssessmentVersionUnavailableError(SessionUnavailableError):
 class ReviewPendingError(SessionUnavailableError):
     """A review read observed a changing or unfinished record; retry it."""
 
+    code = "review_pending"
+
 
 class RestartRecoveryPendingError(SessionUnavailableError):
     """A restart passed its commit point but storage did not finish publishing it.

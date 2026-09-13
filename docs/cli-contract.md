@@ -157,6 +157,61 @@ selection or already the replacement, before it writes anything. Anything else
 fails closed with the journal and staging preserved for repair. Metadata and
 history reads never run this recovery.
 
+## Attempt history listing
+
+`RuntimeApplication.list_attempts(filters, cursor, limit)` (the reader behind
+the history API that 003/03/02 exposes) scans `attempts/` and returns one page
+of metadata rows. It reads only each attempt's bounded `session.json`, the
+pending-marker directory entries, and the pending restart journals; it never
+opens source, review bytes, prompts or event logs, never takes a lifecycle
+lock, never runs recovery, and never writes `active.json` or anything else.
+
+- Rows carry attempt ID, schema version, effective and persisted status,
+  profile, timestamps, revision, summary scores (submitted `score`, abandoned
+  `practice_score`), assessment metadata with `content_identity` and version
+  when pinned, `review_available` (presence of `review.json`, not its content),
+  and safe issue codes. Never source, paths or capability tokens.
+- An overdue active attempt is shown with effective status `expired` while
+  `persisted_status` stays `active`; the listing does not persist that expiry.
+- Ordering is creation time descending, then attempt UUID descending. Rows
+  whose record cannot be read (`record_unavailable`, `record_corrupt`) have no
+  creation time and sort after every dated row; they are `available: false`.
+  Rows owned by a pending restart (`restart_pending`) or a pending
+  finalization (`finalization_pending`) are shown with their current metadata
+  but `available: false`; a lifecycle command, not the listing, completes them.
+- `limit` defaults to 25 and may not exceed 100. `next_cursor` is an opaque
+  ordering boundary bound to the filters it was issued for; a malformed cursor,
+  a cursor issued for different filters, an unknown filter key, or an unknown
+  status is exit 2. Records may move between pages while attempts are created
+  or removed: a page is a refreshable view, not a snapshot.
+- Symlinked or non-UUID entries are skipped and counted in the
+  `unsafe_entries_skipped` warning; unavailable rows hidden by an active filter
+  are counted in `unavailable_records_excluded_by_filter`; an unreadable restart
+  journal is `restart_journals_unreadable`. There is no cap on how many attempts
+  a workspace may retain.
+
+## History, review and action routes (web API)
+
+All routes below require the capability token; POST routes also require the
+exact loopback Origin. Attempt IDs in paths must be canonical lowercase UUIDs
+and are validated before any filesystem access (422 `invalid_input`); an
+unknown action or extra path segment is 404 `not_found`.
+
+| Route | Behavior |
+| --- | --- |
+| `GET /api/attempts?status=&assessment_id=&cursor=&limit=` | The history listing page (`items`, `next_cursor`, `warnings`, `filters`, `limit`). Unknown or empty query keys and a non-decimal limit are 400 `invalid_query`; a malformed cursor, a cursor issued for other filters, an unknown status or a limit outside 1–100 are 422 `invalid_input` with the same message the CLI prints. An unsafe or unreadable `attempts/` directory is 404 `history_unavailable`. |
+| `POST /api/attempts` | Unchanged start (201), refused with 423 `lifecycle_locked` while a live attempt is selected. |
+| `GET /api/attempts/{uuid}/review?include_source=true\|false` | The stored review of that attempt as `attempt_reviews` assembles it: stored metadata, `content_identity`, `source_binding`, verified source (unless `include_source=false`), score, issue codes. Never selects, repairs or rescores; an unknown attempt is 404 `session_unavailable`, a pending finalization is 503 `review_pending`. |
+| `POST /api/attempts/{uuid}/abandon` body `{"expected_revision": N}` | Ends the attempt; returns `{"session", "newly_abandoned"}` (200). A repeat at the same revision returns the stored record with `newly_abandoned: false`. |
+| `POST /api/attempts/{uuid}/restart` body `{"operation_id", "expected_revision", "mode"?, "drill_duration_seconds"?}` | Runs the restart transaction; 201 with `replacement_attempt_id`, `session` (the replacement), `abandoned_session`, `committed_at`, `replayed: false`. An identical repeat is 200 with `replayed: true` and `session: null`. |
+
+Action errors: `stale_revision` and `operation_conflict` are 409 with their
+CLI message, `recovery_pending` is 503 (the restart is committed; retry the
+same operation ID), a terminal or live-selection refusal stays 423
+`lifecycle_locked`, and body validation failures are 422 `invalid_input`.
+Unauthorized requests get the existing 401/403 envelopes and never name an
+attempt or path.
+
 ## Stable exits
 
 | Exit | Meaning |
@@ -191,10 +246,21 @@ codesignal-sim
 ├── restart [--json] [--workspace-root PATH] [--attempt UUID]
 │           --expected-revision N [--operation-id UUID]
 │           [--mode {full,drill}] [--drill-duration-seconds SECONDS]
+├── history [--json] [--workspace-root PATH]
+│           [--status {active,expired,submitted,abandoned}] [--assessment ID]
+│           [--cursor CURSOR] [--limit N]
+├── review  [--json] [--workspace-root PATH] --attempt UUID [--no-source]
 ├── context [--json] [--workspace-root PATH] [--attempt UUID]
             [--format {markdown,json}]
 └── web     [--json] [--workspace-root PATH] [--port PORT] [--no-open]
 ```
+
+`history` prints one page of the attempt history listing described below and
+`review` prints one attempt's stored review (see "Submission review record");
+both are read-only, take no lifecycle lock, and never change the active
+selection. `review` requires an explicit `--attempt`: it never resolves the
+active pointer. Both exit 2 for a malformed cursor, unknown filter or unknown
+status, with the same message the web API returns.
 
 `abandon` ends the selected active attempt explicitly: its state becomes
 `abandoned` with `ended_at`, the reason `ended`, and the last practice score;

@@ -108,6 +108,22 @@ class RestartResult:
     abandoned_state: SessionStateV2 | None = None
     replacement_state: SessionStateV2 | None = None
 
+    def to_dict(self) -> dict[str, object]:
+        """The transport document shared by the CLI envelope and the web API."""
+        return {
+            "operation_id": self.operation_id,
+            "old_attempt_id": self.old_attempt_id,
+            "replacement_attempt_id": self.replacement_attempt_id,
+            "committed_at": self.committed_at.isoformat(),
+            "replayed": self.replayed,
+            "session": (
+                None if self.replacement_state is None else self.replacement_state.to_dict()
+            ),
+            "abandoned_session": (
+                None if self.abandoned_state is None else self.abandoned_state.to_dict()
+            ),
+        }
+
 
 class WorkspaceManager:
     """Create and resolve attempts without ever inferring selection from recency."""

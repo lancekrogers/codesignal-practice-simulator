@@ -83,6 +83,16 @@ class CommandApplication(Protocol):
         output_format: Literal["markdown", "json"],
     ) -> object: ...
 
+    def list_attempts(
+        self,
+        *,
+        filters: Mapping[str, object] | None,
+        cursor: str | None,
+        limit: int | None,
+    ) -> object: ...
+
+    def review(self, *, attempt_id: str, include_source: bool) -> object: ...
+
 
 ApplicationFactory = Callable[[Path], CommandApplication]
 ResultSerializer = Callable[[object], Mapping[str, object]]
@@ -172,6 +182,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="replacement profile (default: the old attempt's profile)",
     )
     restart.add_argument("--drill-duration-seconds", type=_positive_integer)
+
+    history = commands.add_parser(
+        "history", help="list stored attempts from metadata, newest first"
+    )
+    _add_common_options(history, attempt=False)
+    history.add_argument(
+        "--status",
+        choices=("active", "expired", "submitted", "abandoned"),
+        help="only attempts whose effective status matches",
+    )
+    history.add_argument(
+        "--assessment", dest="assessment_id", help="only attempts of this assessment"
+    )
+    history.add_argument("--cursor", help="next_cursor from a previous page")
+    history.add_argument(
+        "--limit", type=_positive_integer, help="page size (default 25, max 100)"
+    )
+
+    review = commands.add_parser(
+        "review", help="show one attempt's stored review without selecting it"
+    )
+    _add_common_options(review)
+    review.add_argument(
+        "--no-source",
+        dest="include_source",
+        action="store_false",
+        help="omit the reviewed source text",
+    )
 
     context = commands.add_parser("context", help="show safe selected attempt context")
     _add_common_options(context)
@@ -285,23 +323,7 @@ def serialize_result(result: object) -> Mapping[str, object]:
     if isinstance(result, AbandonResult):
         return result.to_dict()
     if isinstance(result, RestartResult):
-        return {
-            "operation_id": result.operation_id,
-            "old_attempt_id": result.old_attempt_id,
-            "replacement_attempt_id": result.replacement_attempt_id,
-            "committed_at": result.committed_at.isoformat(),
-            "replayed": result.replayed,
-            "session": (
-                None
-                if result.replacement_state is None
-                else result.replacement_state.to_dict()
-            ),
-            "abandoned_session": (
-                None
-                if result.abandoned_state is None
-                else result.abandoned_state.to_dict()
-            ),
-        }
+        return result.to_dict()
     if isinstance(result, ContextResult):
         return result.to_dict()
     if isinstance(result, Mapping):
@@ -365,6 +387,25 @@ def _dispatch(application: CommandApplication, namespace: argparse.Namespace) ->
             attempt_id=namespace.attempt_id,
             output_format=namespace.output_format,
         )
+    if command == "history":
+        filters = {
+            key: value
+            for key, value in (
+                ("status", namespace.status),
+                ("assessment_id", namespace.assessment_id),
+            )
+            if value is not None
+        }
+        return application.list_attempts(
+            filters=filters or None,
+            cursor=namespace.cursor,
+            limit=namespace.limit,
+        )
+    if command == "review":
+        return application.review(
+            attempt_id=namespace.attempt_id,
+            include_source=namespace.include_source,
+        )
     method = getattr(application, command)
     return method(attempt_id=namespace.attempt_id)
 
@@ -382,6 +423,9 @@ def _validate_arguments(namespace: argparse.Namespace) -> None:
         and namespace.drill_duration_seconds is not None
     ):
         raise InvalidInputError("a drill duration requires --mode drill")
+    if namespace.command == "review" and namespace.attempt_id is None:
+        # Review is explicit by design: it never resolves or changes selection.
+        raise InvalidInputError("review requires --attempt UUID")
 
 
 def _default_application(workspace_root: Path) -> RuntimeApplication:
