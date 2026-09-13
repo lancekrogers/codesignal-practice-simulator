@@ -15,8 +15,18 @@ class DocumentationTests(unittest.TestCase):
     def test_readme_documents_the_session_based_cli_without_requiring_just(self) -> None:
         readme = (PROJECT / "README.md").read_text(encoding="utf-8")
 
+        self.assertIn("docs/assets/practice-simulator.png", readme)
         self.assertIn("codesignal-browser-assessment-simulator-CB0001.gif", readme)
         self.assertIn("How this was built", readme)
+        how_built = readme.split("## How this was built", 1)[1]
+        self.assertIn(
+            "codesignal-browser-assessment-simulator-CB0001.gif",
+            how_built.split("## ", 1)[0],
+        )
+        self.assertNotIn(
+            "codesignal-browser-assessment-simulator-CB0001.gif",
+            readme.split("## How this was built", 1)[0],
+        )
         self.assertIn("`attempts/<uuid>/session.json`", readme)
         self.assertIn("codesignal-sim fetch --workspace-root", readme)
         self.assertIn("codesignal-sim start --workspace-root", readme)

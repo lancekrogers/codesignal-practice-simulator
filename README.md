@@ -7,10 +7,7 @@ box (In-Memory Records, Account Ledger) plus the fetched File Storage
 assessment; every attempt is kept, browsable and reviewable, and can be
 ended or restarted without losing saved work.
 
-![CB0001 build progress across six phases, finishing at 100% completion](docs/assets/codesignal-browser-assessment-simulator-CB0001.gif)
-
-That clip is the six-phase festival that built the browser app, not a practice
-run.
+![Local practice IDE with the prompt, Monaco editor, timer, and test controls](docs/assets/practice-simulator.png)
 
 ## Quick start
 
@@ -61,6 +58,11 @@ The result pairs a Python loopback server with a locally bundled TypeScript UI
 and Monaco editor. The browser and CLI share one server-authoritative attempt
 lifecycle. Verification covered unit and HTTP tests, real Playwright browser
 journeys, offline operation, and installed Python packages.
+
+![CB0001 build progress across six phases, finishing at 100% completion](docs/assets/codesignal-browser-assessment-simulator-CB0001.gif)
+
+That clip is the six-phase festival that built the browser app, not a practice
+run.
 
 ## Practice
 
