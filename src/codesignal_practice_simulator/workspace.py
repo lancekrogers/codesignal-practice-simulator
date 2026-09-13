@@ -470,9 +470,11 @@ class WorkspaceManager:
             raise
         try:
             self.persistence.write_restart_journal_locked(attempts, journal)
-        except OSError:
-            # A replace can succeed and its directory flush still report failure.
-            # Only a journal that is provably absent lets the staging be removed.
+        except Exception:
+            # A replace can succeed and its directory flush still report failure
+            # (OSError). Only a journal that is provably absent lets the staging
+            # be removed; any other failure before the write leaves no journal
+            # and must not orphan the staging directory either.
             if self._journal_is_durable(attempts, journal):
                 return
             self._rollback_new_attempt(staging, None)

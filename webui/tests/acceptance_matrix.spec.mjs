@@ -7,9 +7,12 @@ import {
 } from "./browser_harness.mjs";
 import { EntryPage } from "./pages/entry_page.mjs";
 
-// Acceptance-matrix journeys (006/01) that no earlier spec covered: a stale
-// second tab attempting the same restart, and a real legacy session/v1 record
-// browsed and reviewed through the shipped screens. Synthetic workspace only.
+// Journeys added for the release acceptance matrix (the matrix itself, mapping
+// R1–R11 to every spec and test, lives in the festival's results); these are
+// the scenarios no earlier spec covered: a stale second tab attempting the
+// same restart, a real legacy session/v1 record browsed and reviewed through
+// the shipped screens, and browser back/forward leaving an attempt with
+// unsaved edits. Synthetic workspace only.
 
 let harness;
 let requestPolicy;
@@ -171,6 +174,59 @@ test("a real legacy session/v1 record is listed and reviewed honestly without be
     .then(() => true, (error) => (error.code === "ENOENT" ? false : Promise.reject(error)));
   expect(activeExists).toBe(false);
   expect(harness.attemptId).toBeUndefined();
+});
+
+test("browser back with pending edits saves them first, and unsaved text keeps the attempt open (R4/R10)", async ({ page }) => {
+  await openLibrary(page);
+  await new EntryPage(page).start("full");
+  await expect(page.locator(".status")).toHaveText(/Python editor ready/);
+  const attemptId = await page.locator("main").getAttribute("data-attempt-id");
+
+  // Pending debounced edits: the back gesture flushes the save before leaving.
+  await page.locator(".monaco-editor").click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.type("\n# typed just before back");
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "Practice library", level: 1 })).toBeFocused();
+  const saved = await readFile(join(harness.workspaceRoot, "attempts", attemptId, "simulation.py"), "utf8");
+  expect(saved).toContain("# typed just before back");
+
+  // Text that cannot be saved keeps the attempt open and restores its address.
+  await page.getByRole("button", { name: "Reconnect to active session" }).click();
+  await expect(page.locator(".status")).toHaveText(/Python editor ready/);
+  requestPolicy.intercept("/api/source", {
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({
+      schema_version: "web/v1", ok: false,
+      error: { code: "temporary_failure", message: "temporary save failure" },
+    }),
+  });
+  // The autosave fails once; a buffer already in the failed state is not
+  // retried by the back gesture, it simply keeps the attempt open.
+  requestPolicy.expectHttpError({ method: "PUT", path: "/api/source", status: 503, count: 1 });
+  await page.locator(".monaco-editor").click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.type("\n# cannot be saved");
+  await expect(page.locator(".assessment-header .header-status").nth(1).locator("strong"))
+    .toHaveText("Save failed — retry");
+  await page.goBack();
+  await expect(page.locator(".status")).toContainText("could not be saved, so this attempt stays open");
+  await expect(page.locator("main")).toHaveAttribute("data-attempt-id", attemptId);
+  await expect(page.locator(".view-lines")).toContainText("# cannot be saved");
+  expect(new URL(page.url()).pathname).toBe(`/attempt/${attemptId}`);
+  const unsaved = await readFile(join(harness.workspaceRoot, "attempts", attemptId, "simulation.py"), "utf8");
+  expect(unsaved).not.toContain("# cannot be saved");
+
+  // Once saving works again, Back leaves normally with the text saved.
+  requestPolicy.clearIntercept("/api/source");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.locator(".assessment-header .header-status").nth(1).locator("strong"))
+    .toHaveText("Saved snapshot");
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "Practice library", level: 1 })).toBeFocused();
+  const finallySaved = await readFile(join(harness.workspaceRoot, "attempts", attemptId, "simulation.py"), "utf8");
+  expect(finallySaved).toContain("# cannot be saved");
 });
 
 async function openLibrary(page) {

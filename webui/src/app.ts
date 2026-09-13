@@ -28,7 +28,9 @@ import {
 import { mountHistory } from "./history_screen";
 import { mountReview } from "./review_screen";
 import {
+  announceInAttempt,
   disposeAttempt,
+  settleAttemptBeforeLeaving,
   showAttempt,
   showTerminalAttempt,
 } from "./attempt_runtime";
@@ -83,6 +85,24 @@ async function openChosenAttempt(attemptId: string): Promise<void> {
 
 async function showRoute(route: Route): Promise<void> {
   if (!screen) return;
+  // A live attempt left through the browser's own navigation (back, forward,
+  // a typed address) gets the same protection as the Leave dialog: pending
+  // saves are flushed first, and text that cannot be saved keeps the attempt
+  // open and restores its address instead of being discarded silently.
+  const settlement = await settleAttemptBeforeLeaving();
+  if (settlement.kind === "unsaved") {
+    if (route.kind !== "attempt" || route.attemptId !== settlement.attemptId) {
+      navigateTo({ kind: "attempt", attemptId: settlement.attemptId }, { silent: true });
+    }
+    announceInAttempt(
+      "Your latest edits could not be saved, so this attempt stays open. Save them, or use Back to library to discard them explicitly.",
+    );
+    return;
+  }
+  if (settlement.kind === "clear" && route.kind === "attempt" && route.attemptId === settlement.attemptId) {
+    // Back/forward onto the attempt that is already open: keep it as it is.
+    return;
+  }
   const generation = ++routeGeneration;
   screen.generation = generation;
   screen.library?.destroy();

@@ -178,6 +178,42 @@ class AttemptReviewTests(unittest.TestCase):
             self.read_without_side_effects(submitted.attempt_id, submitted_attempt).practice_score
         )
 
+    def test_missing_review_member_for_a_recorded_submission_fails_closed(self) -> None:
+        """A v2 submission names its review by digest; deleting the member and
+        editing the session must not produce a legacy-labelled review."""
+        state, attempt = self.submit()
+        (attempt / REVIEW_FILENAME).unlink()
+        session_path = attempt / "session.json"
+        document = json.loads(session_path.read_text(encoding="utf-8"))
+        for level in document["score"]["levels"]:
+            level["outcome"] = "passed"
+        document["score"]["passed_levels"] = 4
+        document["score"]["highest_contiguous_level"] = 4
+        session_path.write_text(json.dumps(document), encoding="utf-8")
+        before = tree_snapshot(attempt)
+
+        with self.assertRaisesRegex(SessionCorruptError, "review record is missing") as caught:
+            self.reviews.get_review(state.attempt_id)
+
+        self.assertNotIn(str(self.workspace_root), str(caught.exception))
+        self.assertEqual(tree_snapshot(attempt), before)
+        # A genuine legacy record (no digest) still takes the labelled path.
+        legacy_state, legacy_attempt = self.start()
+        legacy_document = json.loads((legacy_attempt / "session.json").read_text(encoding="utf-8"))
+        self.assertIn("review_digest", legacy_document)
+
+    def test_corrupt_session_record_is_reported_without_a_path(self) -> None:
+        state, attempt = self.start()
+        (attempt / "session.json").write_text("{not json", encoding="utf-8")
+
+        with self.assertRaisesRegex(SessionCorruptError, "stored record is corrupt") as caught:
+            self.reviews.get_review(state.attempt_id)
+
+        message = str(caught.exception)
+        self.assertNotIn(str(self.workspace_root), message)
+        self.assertNotIn("session.json", message)
+        self.assertIn(state.attempt_id, message)
+
     def test_unreadable_source_at_submission_is_reported_as_not_captured(self) -> None:
         state, attempt = self.start()
         (attempt / "simulation.py").unlink()

@@ -69,9 +69,13 @@ the session) containing the exact prior and submitted states, the exact event,
 and the immutable review record. While that marker exists, any selected-attempt
 access accepts only the saved prior or submitted state, then publishes the
 review, state, event, and marker sequence under the attempt lock without
-rerunning the scorer. A review already on disk must be byte-identical to the
-recorded one; a difference is corruption and fails closed rather than being
-overwritten.
+rerunning the scorer. A review already on disk must be the same record as the
+recorded one (compared as parsed records, so an equal record in a different
+byte layout is accepted and left untouched); a different or unreadable record
+is corruption and fails closed rather than being overwritten. A `session/v2`
+submission that names a review by digest but has no review member is likewise
+corruption: the review boundary refuses to serve the mutable session in its
+place instead of labelling it a legacy record.
 Recovery rejects duplicate event IDs or a conflicting submitted event instead
 of manufacturing another submission. A completed repeat `submit` has no marker
 and is byte-identical: it does not score or write.

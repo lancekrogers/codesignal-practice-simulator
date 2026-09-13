@@ -180,7 +180,14 @@ class AttemptReviewService:
                 f"attempt is being finalized; retry: {attempt_id}"
             )
         before = self._session_bytes(attempt, attempt_id)
-        state = self.persistence.read_session(attempt)
+        try:
+            state = self.persistence.read_session(attempt)
+        except SessionCorruptError as error:
+            # Persistence names the file it could not read; every transport of
+            # this boundary (CLI included) must stay path-free.
+            raise SessionCorruptError(f"stored record is corrupt: {attempt_id}") from error
+        except SessionUnavailableError as error:
+            raise SessionUnavailableError(f"attempt is unavailable: {attempt_id}") from error
         if state.attempt_id != attempt.name:
             raise SessionCorruptError(f"attempt identity does not match: {attempt_id}")
         review = self.persistence.read_review(attempt)
@@ -202,6 +209,14 @@ class AttemptReviewService:
             issues.append(CONTENT_IDENTITY_UNAVAILABLE_ISSUE)
         if review is not None:
             self._require_matching_review(state, review)
+        elif getattr(state, "review_digest", None) is not None:
+            # The record says a review was published and identifies it by
+            # digest. A missing member is corruption, never a legacy gap: the
+            # mutable session must not stand in for the verified result.
+            raise SessionCorruptError(
+                f"review record is missing for a submission that recorded one: "
+                f"{state.attempt_id}"
+            )
         if state.status != SUBMITTED:
             binding, source = NOT_APPLICABLE, None
         elif review is None:
