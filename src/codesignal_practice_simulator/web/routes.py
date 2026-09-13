@@ -94,7 +94,12 @@ class RouteHandler:
             )
         if query:
             return failure(404, "not_found", "resource is not available")
-        name = "index.html" if path == "/" else path.removeprefix("/")
+        # Browser application routes reload to the same shell; the client parses
+        # and validates the path. Nothing under a nested path resolves to an asset.
+        if is_shell_path(path):
+            name = "index.html"
+        else:
+            name = path.removeprefix("/")
         if "/" in name:
             return failure(404, "not_found", "resource is not available")
         try:
@@ -397,6 +402,17 @@ class RouteHandler:
             )
         return success(_evaluation_snapshot(snapshot))
 
+# Client-side routes that must survive a reload: library is "/", everything
+# under /attempt and /history belongs to the browser route model. The path
+# never selects a file (the shell is served unchanged), so a mistyped or
+# unknown address reaches the client's "page not found" recovery instead of a
+# bare JSON error, and no path segment can name a packaged asset.
+_APP_ROUTE = re.compile(r"/(?:attempt|history)(?:/.*)?")
+
+
+def is_shell_path(path: str) -> bool:
+    """Whether a canonical request path serves the browser shell (index.html)."""
+    return path in {"/", "/index.html"} or _APP_ROUTE.fullmatch(path) is not None
 _HISTORY_QUERY_KEYS = frozenset({"status", "assessment_id", "cursor", "limit"})
 _ATTEMPT_ACTIONS = frozenset({"review", "abandon", "restart"})
 _DECIMAL = re.compile(r"(0|[1-9][0-9]*)\Z")

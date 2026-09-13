@@ -17,7 +17,7 @@ export function createHeader(state: AttemptState): HeaderElements & HTMLElement 
   const header = element("header", "assessment-header");
   const titleGroup = createTitleGroup(state);
   const meta = createHeaderMeta(state);
-  const leaveButton = button("Back to start", "secondary");
+  const leaveButton = button("Back to library", "secondary");
   leaveButton.dataset.enabled = "true";
   titleGroup.prepend(leaveButton);
   header.append(titleGroup, meta.container);
@@ -35,7 +35,7 @@ function createTitleGroup(state: AttemptState): HTMLElement {
   const titleGroup = element("div", "title-group");
   const title = element("h1");
   title.id = "assessment-title";
-  title.textContent = state.bootstrap.assessment.display_name;
+  title.textContent = attemptDisplayName(state);
   const mode = element("p", "session-mode");
   mode.textContent = `Local practice session · ${state.session.profile.mode} format`;
   const deadline = element("p", "server-deadline");
@@ -87,6 +87,15 @@ function createHeaderMeta(state: AttemptState): {
     saveButton,
     settingsButton,
   };
+}
+
+/** The attempt's own stored assessment name; the primary definition is the fallback. */
+export function attemptDisplayName(state: AttemptState): string {
+  const stored = state.session.assessment;
+  const name = stored && typeof stored === "object"
+    ? (stored as { display_name?: unknown }).display_name
+    : undefined;
+  return typeof name === "string" && name ? name : state.bootstrap.assessment.display_name;
 }
 
 export function createEditorPane(state: AttemptState): EditorElements {
@@ -144,12 +153,25 @@ export function createWorkspace(
   return workspace;
 }
 
+export type ActionBarCallbacks = {
+  onReset(opener: HTMLElement): void;
+  onNavigate(direction: "previous" | "next" | "skip"): void;
+  onRunTests(opener: HTMLElement): void;
+  onSubmit(opener: HTMLElement): void;
+  onEnd(opener: HTMLElement): void;
+  onRestart(opener: HTMLElement): void;
+};
+
+/**
+ * Three distinct lifecycle controls sit together (D004): "Reset source" keeps
+ * the attempt and replaces its source with the baseline; "End attempt" ends it
+ * without a score; "Restart" ends it and opens a fresh replacement. All of them
+ * are mutation controls, so an in-flight save, evaluation or lifecycle
+ * operation disables them.
+ */
 export function createActionBar(
   initialLevel: number,
-  onReset: (opener: HTMLElement) => void,
-  onNavigate: (direction: "previous" | "next" | "skip") => void,
-  onRunTests: (opener: HTMLElement) => void,
-  onSubmit: (opener: HTMLElement) => void,
+  callbacks: ActionBarCallbacks,
   mutationEnabled: boolean,
 ): {
   bar: HTMLElement;
@@ -164,24 +186,34 @@ export function createActionBar(
   run.dataset.mutation = "true";
   run.dataset.enabled = String(mutationEnabled);
   run.disabled = !mutationEnabled;
-  run.addEventListener("click", () => onRunTests(run));
+  run.addEventListener("click", () => callbacks.onRunTests(run));
   left.append(run);
-  const navigation = createNavigationActions(onNavigate);
-  const right = element("div", "action-group");
-  const reset = disabledButton("Reset", "secondary");
+  const navigation = createNavigationActions(callbacks.onNavigate);
+  const right = element("div", "action-group lifecycle-actions");
+  const reset = disabledButton("Reset source", "secondary");
   reset.dataset.mutation = "true";
-  reset.addEventListener("click", () => onReset(reset));
+  reset.addEventListener("click", () => callbacks.onReset(reset));
+  const end = button("End attempt", "secondary");
+  end.dataset.mutation = "true";
+  end.dataset.enabled = String(mutationEnabled);
+  end.disabled = !mutationEnabled;
+  end.addEventListener("click", () => callbacks.onEnd(end));
+  const restart = button("Restart", "secondary");
+  restart.dataset.mutation = "true";
+  restart.dataset.enabled = String(mutationEnabled);
+  restart.disabled = !mutationEnabled;
+  restart.addEventListener("click", () => callbacks.onRestart(restart));
   const submit = button("Submit", "submit-action");
   submit.dataset.mutation = "true";
   submit.dataset.enabled = String(mutationEnabled);
   submit.disabled = !mutationEnabled;
-  submit.addEventListener("click", () => onSubmit(submit));
-  right.append(reset, submit);
+  submit.addEventListener("click", () => callbacks.onSubmit(submit));
+  right.append(reset, end, restart, submit);
   bar.append(left, navigation.element, right);
   navigation.setNavigationLevel(initialLevel);
   return {
     bar,
-    buttons: [run, ...navigation.buttons, reset, submit],
+    buttons: [run, ...navigation.buttons, reset, end, restart, submit],
     setNavigationLevel: navigation.setNavigationLevel,
   };
 }

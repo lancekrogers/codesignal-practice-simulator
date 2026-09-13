@@ -172,7 +172,7 @@ test("reconstructs validated URL view state without lifecycle mutation", async (
     .toHaveAttribute("aria-selected", "true");
   expect(mutations).toHaveLength(0);
   const view = new URL(page.url());
-  expect(view.pathname).toBe("/");
+  expect(view.pathname).toBe(`/attempt/${attemptId}`);
   expect(view.search).toBe("");
   const fragment = new URLSearchParams(view.hash.slice(1));
   expect(fragment.get("attempt_id")).toBe(attemptId);
@@ -268,14 +268,14 @@ test("can cancel leaving, return to start, and reconnect without resetting the a
   page.on("request", (request) => {
     if (["POST", "PUT"].includes(request.method())) mutations.push(request.method());
   });
-  await page.getByRole("button", { name: "Back to start" }).click();
+  await page.getByRole("button", { name: "Back to library" }).click();
   const dialog = page.getByRole("dialog", { name: "Leave assessment?" });
   await expect(dialog).toContainText("The timer keeps running");
   await expect(dialog).toContainText("unsaved local edits will be lost");
   await dialog.getByRole("button", { name: "Cancel" }).click();
-  await expect(page.getByRole("button", { name: "Back to start" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Back to library" })).toBeFocused();
   await expect(page.locator(".view-lines")).toContainText("# saved-before-leaving");
-  await page.getByRole("button", { name: "Back to start" }).click();
+  await page.getByRole("button", { name: "Back to library" }).click();
   await dialog.getByRole("button", { name: "Leave assessment", exact: true }).click();
   await page.getByRole("button", { name: "Reconnect to active session" }).click();
   await expect(page.locator("main")).toHaveAttribute("data-attempt-id", attemptId);
@@ -300,13 +300,13 @@ test("cancel preserves a failed-save buffer and leaving requires explicit discar
   await appendSource(page, "# unsaved-exit-marker");
   await expect(page.locator(".assessment-header .header-status").nth(1).locator("strong"))
     .toHaveText("Save failed — retry");
-  await page.getByRole("button", { name: "Back to start" }).click();
+  await page.getByRole("button", { name: "Back to library" }).click();
   const dialog = page.getByRole("dialog", { name: "Leave assessment?" });
   await expect(dialog).toContainText("unsaved local edits will be lost");
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await expect(page.locator(".view-lines")).toContainText("# unsaved-exit-marker");
   requestPolicy.clearIntercept("/api/source");
-  await page.getByRole("button", { name: "Back to start" }).click();
+  await page.getByRole("button", { name: "Back to library" }).click();
   await dialog.getByRole("button", { name: "Leave assessment", exact: true }).click();
   await page.getByRole("button", { name: "Reconnect to active session" }).click();
   await expect(page.getByText("Python editor ready.", { exact: false })).toBeVisible();
@@ -318,13 +318,13 @@ test("waits for an in-flight save before leaving", async ({ page }) => {
   const held = requestPolicy.hold("/api/source");
   await appendSource(page, "# pending-exit-marker");
   await held;
-  await page.getByRole("button", { name: "Back to start" }).click();
+  await page.getByRole("button", { name: "Back to library" }).click();
   await expect(page.getByRole("dialog")).not.toBeVisible();
   await expect(page.getByText("Wait for the current operation to finish before leaving.", { exact: true })).toBeVisible();
   requestPolicy.release("/api/source");
   await expect(page.locator(".assessment-header .header-status").nth(1).locator("strong"))
     .toHaveText("Saved snapshot");
-  await page.getByRole("button", { name: "Back to start" }).click();
+  await page.getByRole("button", { name: "Back to library" }).click();
   await expect(page.getByRole("dialog", { name: "Leave assessment?" })).toBeVisible();
 });
 
@@ -338,7 +338,7 @@ test("can return to start after submission without another confirmation or mutat
   page.on("request", (request) => {
     if (["POST", "PUT"].includes(request.method())) mutations.push(request.method());
   });
-  await page.getByRole("button", { name: "Back to start" }).click();
+  await page.getByRole("button", { name: "Back to library" }).click();
   await expect(page.getByRole("button", { name: "Start practice", exact: true })).toBeVisible();
   await expect(page.getByRole("dialog")).not.toBeVisible();
   expect(mutations).toHaveLength(0);

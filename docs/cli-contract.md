@@ -267,6 +267,47 @@ same operation ID), a terminal or live-selection refusal stays 423
 Unauthorized requests get the existing 401/403 envelopes and never name an
 attempt or path.
 
+## Browser routes (web shell)
+
+The browser keeps its screen in the URL path so reload, back and forward
+rebuild it; the capability stays in the fragment only until `captureCapability`
+removes it, and the fragment then carries only non-secret view state
+(`attempt_id`, `level`, `tab`). No source text ever enters a route.
+
+| Path | Screen | Requests on load |
+| --- | --- | --- |
+| `/` | Practice library: exercise cards with readiness/setup from the bootstrap `catalog`, the selected session summary with an explicit resume action, the History entry, one start form whose confirmation is the only place that posts `/api/attempts`. | `GET /api/bootstrap`, `GET /manifest.json` |
+| `/attempt/{uuid}` | A cold load (reload, back, forward, typed address) shows the continue screen: exercise, status, format and server deadline with "Reconnect to active session" or "View final session" and Back to library. Only that explicit action requests the source and opens the editor or the read-only view. Loading never mutates anything; an unknown UUID is "Attempt not found" with Back to library. | bootstrap; `GET /api/time` only when the UUID is not the selected session. After the explicit action: `GET /api/time`, `GET /api/source` for that attempt only |
+| `/history` | Attempt history (listing arrives with the history screen task). | bootstrap |
+| `/history/review/{uuid}` | Read-only review shell; opening it never selects the attempt. | bootstrap |
+
+### Attempt actions in the browser and their CLI equivalents
+
+The attempt screen's action bar carries three distinct lifecycle controls, each
+behind a confirmation dialog, and every one runs under the attempt's operation
+lock (an in-flight save, Run Tests, Submit or another lifecycle action disables
+them). Before End or Restart the editor buffer is flushed; when the latest text
+cannot be saved (failed save or unresolved conflict) a second dialog asks for an
+explicit "Discard unsaved edits" decision, and cancelling keeps the attempt
+untouched.
+
+| Control | Effect | CLI equivalent |
+| --- | --- | --- |
+| Reset source | `POST /api/source/reset` replaces the current source with the attempt baseline; the attempt ID, status, revision and timer are unchanged. | No CLI command: edit the attempt's `simulation.py` and save with the editor or `resume`. |
+| End attempt | `POST /api/attempts/{uuid}/abandon` at the revision read from a fresh `/api/time`; the attempt becomes `abandoned` (shown as "Ended"), saved work stays readable. | `abandon --attempt <uuid> --expected-revision N` |
+| Restart | `POST /api/attempts/{uuid}/restart` with an operation UUID minted once per confirmed restart and reused for every retry (stale revision mints a new one); the replacement opens directly at `/attempt/<replacement>`. | `restart --attempt <uuid> --expected-revision N [--operation-id UUID]` |
+
+Failures map to visible, retryable states: `stale_revision` and
+`lifecycle_locked` refresh the view from `/api/time` (a terminal attempt renders
+read-only), `operation_conflict` and `recovery_pending` ask for the same
+Restart again, and an unreachable server keeps the operation ID for the retry.
+
+The server serves `index.html` (with the shell Content-Security-Policy) for `/`,
+`/index.html`, and every path under `/attempt` or `/history` without a query
+string; the path never selects a file, so the client's route validation decides
+between a screen and "Page not found" with Back to library. All other paths
+remain flat asset names or 404.
+
 ## Stable exits
 
 | Exit | Meaning |

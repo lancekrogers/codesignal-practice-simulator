@@ -17,6 +17,8 @@ export type ShellCallbacks = {
   onSubmit(opener: HTMLElement): void;
   onRestore(snapshotId: string, opener: HTMLElement): void;
   onReset(opener: HTMLElement): void;
+  onEnd(opener: HTMLElement): void;
+  onRestart(opener: HTMLElement): void;
 };
 
 export type ShellElements = {

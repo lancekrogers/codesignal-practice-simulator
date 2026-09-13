@@ -9,7 +9,9 @@ export type ApiAction =
   | "start"
   | "reconnect"
   | "testing"
-  | "submitting";
+  | "submitting"
+  | "ending"
+  | "restarting";
 
 export type SafeApiFailure = {
   kind:
@@ -17,9 +19,11 @@ export type SafeApiFailure = {
     | "unavailable"
     | "read_only"
     | "reconnect"
+    | "stale"
+    | "pending"
     | "internal";
   message: string;
-  recovery: "reload" | "reconnect" | "none";
+  recovery: "reload" | "reconnect" | "refresh" | "retry" | "none";
 };
 
 export class ApiError extends Error {
@@ -122,6 +126,39 @@ export function submitAttempt(
   );
 }
 
+/** End an active attempt without scoring (D001 abandon). */
+export function abandonAttempt(
+  attemptId: string,
+  expectedRevision: number,
+  signal?: AbortSignal,
+): Promise<ApiDocument> {
+  return apiPost(
+    `/api/attempts/${encodeURIComponent(attemptId)}/abandon`,
+    { expected_revision: expectedRevision },
+    undefined,
+    signal,
+  );
+}
+
+/**
+ * Run the restart transaction. The operation ID must be minted once per user
+ * decision and reused on every retry so the server replays instead of creating
+ * a second replacement (D001).
+ */
+export function restartAttempt(
+  attemptId: string,
+  operationId: string,
+  expectedRevision: number,
+  signal?: AbortSignal,
+): Promise<ApiDocument> {
+  return apiPost(
+    `/api/attempts/${encodeURIComponent(attemptId)}/restart`,
+    { operation_id: operationId, expected_revision: expectedRevision },
+    undefined,
+    signal,
+  );
+}
+
 async function apiRequest(
   method: "GET" | "POST" | "PUT",
   path: string,
@@ -175,6 +212,9 @@ export function describeApiError(
       recovery: action === "start" ? "reload" : "reconnect",
     };
   }
+  if (action === "ending" || action === "restarting") {
+    return describeLifecycleError(error, action);
+  }
   switch (error.code) {
     case "session_unavailable":
       return {
@@ -214,6 +254,51 @@ export function describeApiError(
   }
 }
 
+function describeLifecycleError(
+  error: ApiError,
+  action: "ending" | "restarting",
+): SafeApiFailure {
+  const verb = action === "ending" ? "End attempt" : "Restart";
+  switch (error.code) {
+    case "stale_revision":
+      return {
+        kind: "stale",
+        message: `${verb} did not apply: this attempt changed elsewhere. The view has been refreshed; review it and choose again.`,
+        recovery: "refresh",
+      };
+    case "operation_conflict":
+      return {
+        kind: "conflict",
+        message: "A restart for this attempt is already in progress. Wait a moment, then choose Restart again to continue it.",
+        recovery: "retry",
+      };
+    case "recovery_pending":
+      return {
+        kind: "pending",
+        message: "The restart is recorded but not finished. Choose Restart again to complete it; no second attempt will be created.",
+        recovery: "retry",
+      };
+    case "lifecycle_locked":
+      return {
+        kind: "read_only",
+        message: `${verb} is not available: this attempt is no longer active. The view has been refreshed.`,
+        recovery: "refresh",
+      };
+    case "reconnect":
+      return {
+        kind: "reconnect",
+        message: `${verb} could not reach the local simulator. Check that it is running, then choose ${verb} again.`,
+        recovery: "retry",
+      };
+    default:
+      return {
+        kind: "internal",
+        message: genericMessage(action),
+        recovery: "retry",
+      };
+  }
+}
+
 function genericMessage(action: ApiAction): string {
   if (action === "bootstrap") {
     return "The assessment entry data could not be loaded safely. Reload the local simulator.";
@@ -229,6 +314,12 @@ function genericMessage(action: ApiAction): string {
   }
   if (action === "submitting") {
     return "The submission could not complete safely. Try again.";
+  }
+  if (action === "ending") {
+    return "End attempt could not complete safely. The attempt is unchanged; try again.";
+  }
+  if (action === "restarting") {
+    return "Restart could not complete safely. Choose Restart again; the same operation is retried.";
   }
   return "The local simulator could not complete this entry action safely. Reconnect and try again.";
 }

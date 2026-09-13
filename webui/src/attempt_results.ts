@@ -53,7 +53,9 @@ function renderResults(
   if (!score) {
     addText(output, status === "expired"
       ? "This attempt has expired. The server snapshot is final for this view."
-      : "Run local practice checks to see bounded per-level results.");
+      : status === "abandoned"
+        ? "This attempt was ended before submission. No final result was recorded."
+        : "Run local practice checks to see bounded per-level results.");
     return;
   }
   const summary = document.createElement("p");

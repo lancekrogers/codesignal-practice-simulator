@@ -28,7 +28,7 @@ export function createControlApi(
   | "confirmAction"
   | "destroy"
 > {
-  const reset = controls.find((control) => control.textContent === "Reset");
+  const reset = controls.find((control) => control.textContent === "Reset source");
   let operationBusy = false;
   return {
     focusInitial: () => focusFirstAction(levelNav.element),

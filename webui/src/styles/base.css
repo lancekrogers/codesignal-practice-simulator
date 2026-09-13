@@ -122,6 +122,86 @@ button.secondary {
   margin: 0.5rem 0;
 }
 
+.library-header nav {
+  margin-top: 0.75rem;
+}
+
+.exercise-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1rem;
+  padding: 0;
+  list-style: none;
+}
+
+.exercise-card {
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  padding: 1rem;
+  margin: 0;
+  display: grid;
+  gap: 0.5rem;
+  align-content: start;
+}
+
+.exercise-card[data-selected="true"] {
+  border-color: var(--accent);
+}
+
+.exercise-card h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.exercise-description,
+.exercise-meta,
+.setup-message,
+.selected-exercise {
+  margin: 0;
+  color: var(--muted);
+}
+
+.readiness {
+  justify-self: start;
+  font-size: 0.85rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+}
+
+.readiness-ready {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.readiness-setup {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.session-summary {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0.75rem 0;
+}
+
+.session-summary dt {
+  color: var(--muted);
+}
+
+.session-summary dd {
+  margin: 0;
+}
+
+.notice-state .action-group,
+.error-state .action-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
 .warning {
   border-left: 0.25rem solid var(--warning);
   padding: 0.75rem 1rem;

@@ -107,8 +107,13 @@ test("renders a computed visible focus indicator for keyboard navigation", async
 }) => {
   await page.goto(`${harness.origin}/#token=${harness.token}`);
   await expect(page.locator(".entry")).toBeVisible();
+  // The library heading holds focus on load; keyboard order runs History, the
+  // exercise selectors, the format radios, then Start.
+  await expect(page.getByRole("heading", { name: "Practice library", level: 1 })).toBeFocused();
   const start = page.getByRole("button", { name: "Start practice" });
   await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: "History" })).toBeFocused();
+  await page.getByRole("radio", { name: /Full assessment/ }).focus();
   await page.keyboard.press("Tab");
   await expect(start).toBeFocused();
 

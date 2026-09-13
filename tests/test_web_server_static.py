@@ -36,6 +36,37 @@ class TestWebServerStatic(WebServerTestCase):
         status, _headers, _body = self.request("GET", "/app.js?path=../secret", token=None)
         self.assertEqual(status, 404)
 
+    def test_browser_routes_serve_the_shell_without_touching_assets(self) -> None:
+        shell_status, shell_headers, shell = self.request("GET", "/", token=None)
+        self.assertEqual(shell_status, 200)
+        attempt = "/attempt/0f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f"
+        for route in (attempt, "/history", f"/history/review{attempt[8:]}",
+                      "/attempt/not-an-attempt", "/history/", "/attempt"):
+            with self.subTest(route=route):
+                status, headers, body = self.request("GET", route, token=None)
+                self.assertEqual(status, 200)
+                self.assertEqual(body, shell)
+                self.assertEqual(headers["content-type"], shell_headers["content-type"])
+                self.assertEqual(headers["cache-control"], "no-store")
+                self.assertEqual(
+                    headers["content-security-policy"],
+                    shell_headers["content-security-policy"],
+                )
+                status, headers, body = self.request("HEAD", route, token=None)
+                self.assertEqual((status, body), (200, b""))
+                self.assertEqual(int(headers["content-length"]), len(shell))
+        # Route prefixes never widen the static namespace: assets stay flat and
+        # every other nested or query-bearing path is still not found.
+        for path in ("/attempt/../app.js", "/attempts", "/histories", "/review/x",
+                     f"{attempt}?token=x", "/history/app.js", "/attempt/app.js"):
+            with self.subTest(path=path):
+                status, _headers, body = self.request("GET", path, token=None)
+                if path.startswith(("/attempt/", "/history/")) and "?" not in path:
+                    self.assertEqual((status, body), (200, shell))
+                else:
+                    self.assertEqual(status, 404)
+                    self.assertNotIn(b"Practice Simulator", body)
+
     def test_static_route_maps_one_read_missing_asset_to_not_found(self) -> None:
         with patch(
             "codesignal_practice_simulator.web.routes.read_asset",
