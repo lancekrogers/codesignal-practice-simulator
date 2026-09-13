@@ -37,6 +37,52 @@ def discover_packaging_interpreter(*, require_build: bool = False) -> Path | Non
     return None
 
 
+BUILD_MODE_FRONTEND = "build"
+BUILD_MODE_HOOKS = "pep517-hooks"
+# pyproject.toml's build-system.requires floor; the in-process hook path has no
+# frontend to enforce it, so the probe does.
+MINIMUM_SETUPTOOLS_MAJOR = 61
+
+
+def discover_builder() -> tuple[Path, str] | None:
+    """Return an interpreter that can build this project and how it will do so.
+
+    ``build`` mode runs ``python -m build --no-isolation``. ``pep517-hooks`` mode
+    calls ``setuptools.build_meta`` directly in-process, which is exactly what
+    that frontend does under the hood, so a machine with setuptools, wheel, pip
+    and venv but no ``build`` distribution can still produce and verify the
+    archives offline. Neither mode downloads anything.
+    """
+    frontend = discover_packaging_interpreter(require_build=True)
+    if frontend is not None:
+        return frontend, BUILD_MODE_FRONTEND
+    hooks = discover_packaging_interpreter(require_build=False)
+    if hooks is not None and _probe_setuptools_floor(hooks):
+        return hooks, BUILD_MODE_HOOKS
+    return None
+
+
+def _probe_setuptools_floor(interpreter: Path) -> bool:
+    probe = subprocess.run(
+        [
+            str(interpreter),
+            "-W",
+            "ignore",
+            "-c",
+            (
+                "import setuptools, sys; "
+                "major = int(setuptools.__version__.split('.')[0]); "
+                f"sys.exit(0 if major >= {MINIMUM_SETUPTOOLS_MAJOR} else 1)"
+            ),
+        ],
+        cwd=tempfile.gettempdir(),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return probe.returncode == 0
+
+
 def _required_modules(*, require_build: bool) -> tuple[str, ...]:
     if require_build:
         return (*_BASE_PACKAGING_MODULES, "build")
@@ -46,12 +92,19 @@ def _required_modules(*, require_build: bool) -> tuple[str, ...]:
 def packaging_prerequisite_error(*, require_build: bool = False) -> str:
     """Explain how to select an interpreter capable of the requested check."""
     required = ", ".join(_required_modules(require_build=require_build))
+    fallback = (
+        f" Without `build`, setuptools >= {MINIMUM_SETUPTOOLS_MAJOR} plus wheel, pip "
+        "and venv are enough: the check then calls the setuptools PEP 517 hooks "
+        "directly."
+        if require_build
+        else ""
+    )
     return (
         f"no Python interpreter satisfies packaging prerequisites: {required}. "
         "Set ASSET_BUILDER to a capable interpreter. To provision one, run "
         "`<python> -m ensurepip --upgrade` if pip is missing, then "
         "`<python> -m pip install --upgrade setuptools wheel"
-        f"{' build' if require_build else ''}`."
+        f"{' build' if require_build else ''}`.{fallback}"
     )
 
 
@@ -73,6 +126,9 @@ def _probe(interpreter: Path, *, required_modules: tuple[str, ...]) -> bool:
 
 
 __all__ = [
+    "BUILD_MODE_FRONTEND",
+    "BUILD_MODE_HOOKS",
+    "discover_builder",
     "discover_packaging_interpreter",
     "packaging_prerequisite_error",
 ]

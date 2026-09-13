@@ -141,7 +141,15 @@ class PackagedOriginalProvider:
         manifest = self._manifest(definition)
         directory = self._directory(definition)
         try:
-            entries = sorted(entry.name for entry in directory.iterdir())
+            # pip byte-compiles the bundled .py files at install time, so an
+            # installed package legitimately carries a __pycache__ directory
+            # beside them. It is never read or staged; only a real directory of
+            # that name is tolerated, and every other extra entry still fails.
+            entries = sorted(
+                entry.name
+                for entry in directory.iterdir()
+                if not _is_bytecode_cache(entry)
+            )
         except OSError as error:
             raise _invalid(definition, "cannot inspect packaged directory") from error
         allowed = {*definition.copied_filenames, PACKAGE_MANIFEST_NAME}
@@ -242,6 +250,17 @@ class PackagedOriginalProvider:
             content_version=version,
             file_hashes=dict(files),
         )
+
+
+BYTECODE_CACHE_DIRECTORY = "__pycache__"
+
+
+def _is_bytecode_cache(entry: Path) -> bool:
+    return (
+        entry.name == BYTECODE_CACHE_DIRECTORY
+        and not entry.is_symlink()
+        and entry.is_dir()
+    )
 
 
 class InputProviders:

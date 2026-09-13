@@ -246,6 +246,42 @@ class PackagedOriginalTests(ProviderTestCase):
             ORIGINAL_CONTENT["level4.md"],
         )
 
+    def test_installed_bytecode_cache_is_tolerated_but_never_staged_or_widened(self) -> None:
+        """pip byte-compiles bundled .py files, so an installed package carries
+        __pycache__ beside them (the wheel check surfaced this on the installed
+        wheel). Only a real directory of that exact name is tolerated; nothing in
+        it is staged, and every other extra entry still fails validation."""
+        cache = self.package / "__pycache__"
+        cache.mkdir()
+        (cache / "simulation.cpython-312.pyc").write_bytes(b"\x00compiled")
+        service = self.service(self.manager(cache=self.missing_cache()))
+
+        state = service.start(ORIGINAL.metadata)
+
+        attempt = self.attempts() / state.attempt_id
+        for name, data in ORIGINAL_CONTENT.items():
+            self.assertEqual((attempt / name).read_bytes(), data)
+        self.assertFalse((attempt / "__pycache__").exists())
+        self.assertFalse(any(path.suffix == ".pyc" for path in attempt.rglob("*")))
+        # A stray file inside the same directory is still refused ...
+        (self.package / "solution.py").write_text("x", encoding="utf-8")
+        with self.assertRaisesRegex(FixtureSetupRequiredError, "unexpected packaged file: solution.py"):
+            self.service(self.manager(cache=self.missing_cache())).start(ORIGINAL.metadata)
+        (self.package / "solution.py").unlink()
+        # ... and so is anything else wearing the cache's name.
+        (cache / "simulation.cpython-312.pyc").unlink()
+        cache.rmdir()
+        cache.write_text("not a directory", encoding="utf-8")
+        with self.assertRaisesRegex(FixtureSetupRequiredError, "unexpected packaged file: __pycache__"):
+            self.service(self.manager(cache=self.missing_cache())).start(ORIGINAL.metadata)
+        cache.unlink()
+        elsewhere = self.root / "elsewhere-cache"
+        elsewhere.mkdir()
+        cache.symlink_to(elsewhere, target_is_directory=True)
+        with self.assertRaisesRegex(FixtureSetupRequiredError, "unexpected packaged file: __pycache__"):
+            self.service(self.manager(cache=self.missing_cache())).start(ORIGINAL.metadata)
+        cache.unlink()
+
     def test_tampered_or_incomplete_packages_are_rejected_before_any_mutation(self) -> None:
         manifest_path = self.package / PACKAGE_MANIFEST_NAME
         valid_manifest = manifest_path.read_text(encoding="utf-8")

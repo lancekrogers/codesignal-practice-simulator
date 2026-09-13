@@ -120,7 +120,16 @@ installed) definition.
 
 Bundled originals ship under `resources/assessments/<id>/` and the archive
 checks (`just check wheel`) accept exactly the six candidate-facing files plus
-`content-manifest.json` there; any other member fails the build check.
+`content-manifest.json` there; any other member fails the build check. In an
+installed package pip's byte-compilation adds a `__pycache__` directory beside
+those files; the provider tolerates exactly that (a real directory of that
+name), never reads or stages it, and still refuses every other extra entry.
+
+`just check wheel` builds with `python -m build --no-isolation` when the
+`build` distribution is installed and otherwise calls the setuptools PEP 517
+hooks directly (`scripts/packaging_support.py::discover_builder`, reported as
+`build_mode`); both need setuptools >= 61, wheel, pip and venv and neither
+downloads anything.
 `just check content` validates the bundled directories in the checkout: exact
 file set, manifest hashes, registry agreement, and a `test_simulation.py` that
 defines exactly `test_group_1` through `test_group_4` importing only `unittest`

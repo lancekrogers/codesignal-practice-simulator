@@ -23,7 +23,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from check_assets import check_static_root  # noqa: E402
 from packaging_support import (  # noqa: E402
-    discover_packaging_interpreter,
+    BUILD_MODE_FRONTEND,
+    BUILD_MODE_HOOKS,
+    discover_builder,
     packaging_prerequisite_error,
 )
 
@@ -385,10 +387,11 @@ def _readline(process: subprocess.Popen[str]) -> str:
 
 
 def main() -> int:
-    python = discover_packaging_interpreter(require_build=True)
-    if python is None:
+    builder = discover_builder()
+    if builder is None:
         print(packaging_prerequisite_error(require_build=True), file=sys.stderr)
         return 2
+    python, build_mode = builder
     npm = shutil.which("npm")
     if npm is None:
         print("npm is required for the packaged browser check", file=sys.stderr)
@@ -399,6 +402,7 @@ def main() -> int:
     summary: dict[str, object] = {
         "asset_count": len(expected_hashes),
         "builder": str(python),
+        "build_mode": build_mode,
     }
     with tempfile.TemporaryDirectory(prefix="codesignal-browser-wheel-") as directory:
         root = Path(directory)
@@ -408,6 +412,7 @@ def main() -> int:
                 Path(npm),
                 root,
                 expected_hashes,
+                build_mode=build_mode,
             )
         )
     if root.exists():
@@ -422,8 +427,10 @@ def verify_installed_package(
     npm: Path,
     root: Path,
     expected_hashes: dict[str, str],
+    *,
+    build_mode: str = BUILD_MODE_FRONTEND,
 ) -> dict[str, object]:
-    wheel, source = build_archives(builder, root)
+    wheel, source = build_archives(builder, root, build_mode=build_mode)
     summary: dict[str, object] = {
         "archives": inspect_archives(wheel, source, expected_hashes)
     }
@@ -468,22 +475,51 @@ def verify_installed_package(
     return summary
 
 
-def build_archives(builder: Path, root: Path) -> tuple[Path, Path]:
+def build_archives(
+    builder: Path,
+    root: Path,
+    *,
+    build_mode: str = BUILD_MODE_FRONTEND,
+) -> tuple[Path, Path]:
     dist = root / "dist"
-    run(
-        [
-            str(builder),
-            "-m",
-            "build",
-            "--sdist",
-            "--wheel",
-            "--no-isolation",
-            "--outdir",
-            str(dist),
-            str(PROJECT),
-        ],
-        cwd=root,
-    )
+    if build_mode == BUILD_MODE_FRONTEND:
+        run(
+            [
+                str(builder),
+                "-m",
+                "build",
+                "--sdist",
+                "--wheel",
+                "--no-isolation",
+                "--outdir",
+                str(dist),
+                str(PROJECT),
+            ],
+            cwd=root,
+        )
+    elif build_mode == BUILD_MODE_HOOKS:
+        # The same setuptools backend `python -m build --no-isolation` would
+        # drive, called in-process: an sdist and a wheel from the checkout, with
+        # no network and no frontend distribution required.
+        dist.mkdir(parents=True, exist_ok=True)
+        run(
+            [
+                str(builder),
+                "-W",
+                "ignore",
+                "-c",
+                (
+                    "import sys; from setuptools import build_meta; "
+                    "out = sys.argv[1]; "
+                    "print(build_meta.build_sdist(out)); "
+                    "print(build_meta.build_wheel(out))"
+                ),
+                str(dist),
+            ],
+            cwd=PROJECT,
+        )
+    else:
+        raise RuntimeError(f"unknown build mode: {build_mode}")
     return next(dist.glob("*.whl")), next(dist.glob("*.tar.gz"))
 
 

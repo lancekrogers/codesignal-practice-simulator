@@ -319,8 +319,11 @@ function resultText(item: HistoryItem): string {
   if (item.status === "submitted" && item.score) {
     return `Final: ${item.score.passed_levels} of ${item.score.levels.length} levels`;
   }
-  if (item.practice_score) {
-    return `Last practice: ${item.practice_score.passed_levels} of ${item.practice_score.levels.length} levels`;
+  // An ended attempt keeps its last practice result in practice_score; an
+  // active or expired one still holds it in score. Neither is a final result.
+  const practice = item.practice_score ?? (item.status !== "submitted" ? item.score : null);
+  if (practice) {
+    return `Last practice: ${practice.passed_levels} of ${practice.levels.length} levels`;
   }
   if (item.status === "submitted") return "Final result unavailable";
   return "No result recorded";

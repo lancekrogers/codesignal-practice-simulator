@@ -134,6 +134,80 @@ class PackagingInterpreterTests(unittest.TestCase):
         self.assertIn("build", error)
         self.assertIn("ASSET_BUILDER", error)
         self.assertIn("ensurepip", error)
+        self.assertIn("PEP 517 hooks", error)
+        self.assertNotIn("PEP 517", packaging_support.packaging_prerequisite_error())
+
+    def test_builder_prefers_the_build_frontend_and_falls_back_to_hooks(self) -> None:
+        frontend = Path("/synthetic/with-build")
+        hooks_only = Path("/synthetic/setuptools-only")
+        with patch.object(
+            packaging_support,
+            "discover_packaging_interpreter",
+            side_effect=lambda *, require_build: frontend if require_build else hooks_only,
+        ):
+            self.assertEqual(
+                packaging_support.discover_builder(),
+                (frontend, packaging_support.BUILD_MODE_FRONTEND),
+            )
+        with (
+            patch.object(
+                packaging_support,
+                "discover_packaging_interpreter",
+                side_effect=lambda *, require_build: None if require_build else hooks_only,
+            ),
+            patch.object(packaging_support, "_probe_setuptools_floor", return_value=True),
+        ):
+            self.assertEqual(
+                packaging_support.discover_builder(),
+                (hooks_only, packaging_support.BUILD_MODE_HOOKS),
+            )
+        # A setuptools older than pyproject's floor cannot stand in for the frontend.
+        with (
+            patch.object(
+                packaging_support,
+                "discover_packaging_interpreter",
+                side_effect=lambda *, require_build: None if require_build else hooks_only,
+            ),
+            patch.object(packaging_support, "_probe_setuptools_floor", return_value=False),
+        ):
+            self.assertIsNone(packaging_support.discover_builder())
+        with patch.object(
+            packaging_support, "discover_packaging_interpreter", return_value=None
+        ):
+            self.assertIsNone(packaging_support.discover_builder())
+
+    def test_build_archives_hook_mode_calls_setuptools_in_the_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calls: list[tuple[list[str], Path]] = []
+
+            def fake_run(command, *, cwd, **_kwargs):
+                calls.append((command, cwd))
+                dist = root / "dist"
+                (dist / "pkg-0.0.0-py3-none-any.whl").write_bytes(b"")
+                (dist / "pkg-0.0.0.tar.gz").write_bytes(b"")
+
+            with patch.object(run_packaged_browser, "run", side_effect=fake_run):
+                wheel, source = run_packaged_browser.build_archives(
+                    Path("/synthetic/python"),
+                    root,
+                    build_mode=run_packaged_browser.BUILD_MODE_HOOKS,
+                )
+            self.assertEqual(wheel.name, "pkg-0.0.0-py3-none-any.whl")
+            self.assertEqual(source.name, "pkg-0.0.0.tar.gz")
+            self.assertEqual(len(calls), 1)
+            command, cwd = calls[0]
+            self.assertEqual(cwd, run_packaged_browser.PROJECT)
+            self.assertEqual(command[0], "/synthetic/python")
+            self.assertIn("from setuptools import build_meta", command[-2])
+            self.assertIn("build_sdist", command[-2])
+            self.assertIn("build_wheel", command[-2])
+            self.assertEqual(command[-1], str(root / "dist"))
+            self.assertNotIn("-m", command)
+            with self.assertRaises(RuntimeError):
+                run_packaged_browser.build_archives(
+                    Path("/synthetic/python"), root, build_mode="unknown"
+                )
 
 
 class ArchiveResourceTests(unittest.TestCase):
