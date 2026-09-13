@@ -117,6 +117,9 @@ class AttemptReview:
     source_binding: Literal["captured", "not_captured", "not_applicable"]
     source: ReviewSourceView | None
     issues: tuple[str, ...]
+    # The last local practice result an ended (abandoned) attempt carried when
+    # it ended; never a submission result. None for every other status.
+    practice_score: ScoreSummary | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -131,6 +134,9 @@ class AttemptReview:
                 None if self.submitted_at is None else self.submitted_at.isoformat()
             ),
             "score": None if self.score is None else self.score.to_dict(),
+            "practice_score": (
+                None if self.practice_score is None else self.practice_score.to_dict()
+            ),
             "source_binding": self.source_binding,
             "source": None if self.source is None else self.source.to_dict(),
             "issues": list(self.issues),
@@ -248,6 +254,7 @@ class AttemptReviewService:
             source_binding=binding,
             source=source,
             issues=tuple(issues),
+            practice_score=adapted.practice_score,
         )
 
     @staticmethod

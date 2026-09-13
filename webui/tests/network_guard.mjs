@@ -1814,7 +1814,7 @@ function isDocumentedRequest(path) {
         "/api/submit",
       ].includes(path) ||
       /^\/api\/prompts\/[1-4]$/u.test(path) ||
-      /^\/api\/attempts\/[0-9a-f-]{36}\/(?:abandon|restart)$/u.test(path)
+      /^\/api\/attempts\/[0-9a-f-]{36}\/(?:abandon|restart|review)$/u.test(path)
     );
   }
   return /^\/[A-Za-z0-9._-]+\.(?:js|css|ttf)$/u.test(path);

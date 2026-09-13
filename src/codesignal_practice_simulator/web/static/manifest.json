@@ -2,7 +2,7 @@
   "ASSET_PROVENANCE.txt": {
     "media_type": "text/plain; charset=utf-8",
     "cache_control": "no-store",
-    "sha256": "15c15decce0daa6f334add9e66681aceeecdc63aa4f18a07d5ca5749a1bacd25",
+    "sha256": "23fc9acf4e8e02baed6a4ca43cd9370eb9446755ac414638f7cd19ddbcebdc00",
     "size": 2257
   },
   "NOTICE.txt": {
@@ -11,11 +11,11 @@
     "sha256": "278342a849a42551f42a95478436883e326cf1fbc0133416307ec72d696845e4",
     "size": 95631
   },
-  "app-JJLHTHIU.js": {
+  "app-BNEAJMND.js": {
     "media_type": "text/javascript; charset=utf-8",
     "cache_control": "public, max-age=31536000, immutable",
-    "sha256": "c463e4008580dd69da48a6f94ccd9494e04e911baca0d36294fbd1faa6ebc838",
-    "size": 3023823
+    "sha256": "f524de19b178eb63bf26cc92a208f623e270416d99c0bf1b9633beaf739b6805",
+    "size": 3055634
   },
   "app-QRCXFRU5.css": {
     "media_type": "text/css; charset=utf-8",
@@ -26,8 +26,8 @@
   "app.js": {
     "media_type": "text/javascript; charset=utf-8",
     "cache_control": "no-store",
-    "sha256": "c463e4008580dd69da48a6f94ccd9494e04e911baca0d36294fbd1faa6ebc838",
-    "size": 3023823
+    "sha256": "f524de19b178eb63bf26cc92a208f623e270416d99c0bf1b9633beaf739b6805",
+    "size": 3055634
   },
   "codicon-KP4OV2OO.ttf": {
     "media_type": "font/ttf",
@@ -50,7 +50,7 @@
   "index.html": {
     "media_type": "text/html; charset=utf-8",
     "cache_control": "no-store",
-    "sha256": "c3134bb04b45fa2cb77b76801f696f6b48b057d88c9f63c0a94cfa0c252f2dc1",
+    "sha256": "0c8a449efdeb38db8c573d93c4d16b51232d69a3f88607dec6d840214348fca2",
     "size": 473
   },
   "language.worker-F67IIHMR.js": {
@@ -59,17 +59,17 @@
     "sha256": "46b4f6f3f972ba9eef00c2c56ba3150cd16ee7a4c6776227cafa97f0e6761c49",
     "size": 37
   },
-  "styles-AFXT4P3B.css": {
+  "styles-AJHKO62J.css": {
     "media_type": "text/css; charset=utf-8",
     "cache_control": "public, max-age=31536000, immutable",
-    "sha256": "0e66b96ffc3eecd4c95ad1555886246f481526b87f6c4cf5ae90f16a988191d7",
-    "size": 9451
+    "sha256": "ffe9d1cac5414b18f55b620ad90d7598a6bf7c20c7c33e233a6f2ab192d5d25e",
+    "size": 10887
   },
   "styles.css": {
     "media_type": "text/css; charset=utf-8",
     "cache_control": "no-store",
-    "sha256": "0e66b96ffc3eecd4c95ad1555886246f481526b87f6c4cf5ae90f16a988191d7",
-    "size": 9451
+    "sha256": "ffe9d1cac5414b18f55b620ad90d7598a6bf7c20c7c33e233a6f2ab192d5d25e",
+    "size": 10887
   },
   "manifest.json": {
     "media_type": "application/json; charset=utf-8",

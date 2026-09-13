@@ -18,7 +18,6 @@ import {
 import {
   renderBooting,
   renderError,
-  renderNotice,
   renderReconnect,
 } from "./views";
 import {
@@ -26,6 +25,8 @@ import {
   renderLibrary,
   type LibraryElements,
 } from "./library_view";
+import { mountHistory } from "./history_screen";
+import { mountReview } from "./review_screen";
 import {
   disposeAttempt,
   showAttempt,
@@ -292,14 +293,18 @@ async function reconnect(
 async function showHistoryRoute(root: HTMLElement, generation: number): Promise<void> {
   const bootstrap = await loadBootstrap(root, generation);
   if (!bootstrap) return;
-  focus(renderNotice(root, {
-    className: "history",
-    title: "Attempt history",
-    message: "The history listing is not part of this build yet. Use the library to resume or start attempts.",
-    actions: [
-      { label: "Back to library", onClick: () => navigateTo({ kind: "library" }) },
-    ],
-  }));
+  mountHistory({
+    root,
+    bootstrap,
+    isCurrent: () => current(generation),
+    // Review keeps the fragment (filters and cursor) so Back to history
+    // restores the same page; it never selects the reviewed attempt.
+    onReview: (attemptId) => navigateTo({ kind: "review", attemptId }),
+    // Resume is offered only for the selected active attempt, so opening it
+    // is the same explicit action as the library's reconnect.
+    onResume: (attemptId) => void openChosenAttempt(attemptId),
+    onLibrary: () => navigateTo({ kind: "library" }),
+  });
 }
 
 async function showReviewRoute(
@@ -308,18 +313,21 @@ async function showReviewRoute(
   attemptId: string,
 ): Promise<void> {
   const bootstrap = await loadBootstrap(root, generation);
-  if (!bootstrap) return;
-  const main = renderNotice(root, {
-    className: "review",
-    title: "Attempt review",
-    message: "The read-only review screen is not part of this build yet. Reviewing never selects an attempt as active.",
-    actions: [
-      { label: "Back to history", onClick: () => navigateTo({ kind: "history" }) },
-      { label: "Back to library", onClick: () => navigateTo({ kind: "library" }) },
-    ],
+  if (!bootstrap || !screen) return;
+  const mounted = mountReview({
+    root,
+    bootstrap,
+    attemptId,
+    isCurrent: () => current(generation),
+    // Retry (after confirmation) and "Resume active attempt" are explicit
+    // actions, so the chosen attempt opens directly.
+    onOpenAttempt: (chosen) => {
+      mounted.destroy();
+      void openChosenAttempt(chosen);
+    },
+    onHistory: () => navigateTo({ kind: "history" }),
+    onLibrary: () => navigateTo({ kind: "library" }),
   });
-  main.closest("main")?.setAttribute("data-review-attempt-id", attemptId);
-  focus(main);
 }
 
 function showUnknownRoute(root: HTMLElement, _path: string): void {

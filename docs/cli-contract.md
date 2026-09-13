@@ -147,6 +147,14 @@ guessed. A `session/v1` attempt submitted by this release therefore has bound
 source bytes with no content identity, while one submitted by an older release
 has no review record at all.
 
+A review of an attempt that was never submitted reports `source_binding:
+not_applicable` and `source: null`; for an expired attempt `score` is the last
+local practice result the record holds, and for an ended (abandoned) attempt
+that result is `practice_score` while `score` is null. Neither is a submission
+result, and the browser labels them "last practice result". The saved work of
+such an attempt is read through the ordinary source route by explicit attempt
+ID, never presented as submitted bytes.
+
 ## Lifecycle and expiry
 
 An active session is expired when the injected UTC clock is at or after
@@ -278,8 +286,8 @@ removes it, and the fragment then carries only non-secret view state
 | --- | --- | --- |
 | `/` | Practice library: exercise cards with readiness/setup from the bootstrap `catalog`, the selected session summary with an explicit resume action, the History entry, one start form whose confirmation is the only place that posts `/api/attempts`. | `GET /api/bootstrap`, `GET /manifest.json` |
 | `/attempt/{uuid}` | A cold load (reload, back, forward, typed address) shows the continue screen: exercise, status, format and server deadline with "Reconnect to active session" or "View final session" and Back to library. Only that explicit action requests the source and opens the editor or the read-only view. Loading never mutates anything; an unknown UUID is "Attempt not found" with Back to library. | bootstrap; `GET /api/time` only when the UUID is not the selected session. After the explicit action: `GET /api/time`, `GET /api/source` for that attempt only |
-| `/history` | Attempt history (listing arrives with the history screen task). | bootstrap |
-| `/history/review/{uuid}` | Read-only review shell; opening it never selects the attempt. | bootstrap |
+| `/history` | Attempt history: exercise/status filters, rows per page (the control offers 10/25/50/100, the fragment accepts 1–100, default 25), newest-first rows with status, format, start time, result summary, review availability and per-row unavailability with issue codes, aggregate warnings for skipped entries, Newest/Older paging with a refresh note on older pages, Review and (for the selected active attempt only) Resume. Filters and cursor live in the fragment (`#status=&assessment_id=&cursor=&limit=`); a malformed fragment value falls back to the default with a visible notice, and a cursor the server rejects shows "Show newest". | bootstrap, `GET /api/attempts?…` only |
+| `/history/review/{uuid}` | Read-only review: stored metadata (exercise, pinned content version or "unavailable (legacy record)", status, format, timing, record version), the result labelled honestly ("Final result" only for a submission; "Last practice result" for expired/ended attempts, from `score` or `practice_score`), legacy banners for `submitted_source_binding_unavailable`, `submitted_source_was_unreadable`, `legacy_source_unavailable` and missing content identity, and the source with its binding named (submitted bytes with digest, current file "not proven submitted", or "Saved work (not a submission)" read by explicit id). "Retry this exercise" is disabled with the reason when the exercise is not installed or needs setup; otherwise a confirmation dialog states the mode and any content-version difference; with a live attempt it offers Resume active attempt / End it and start a new attempt / Cancel and never displaces silently. Opening a review never selects the attempt. | bootstrap, `GET /api/attempts/{uuid}/review`, plus `GET /api/source?attempt_id=` for a never-submitted attempt |
 
 ### Attempt actions in the browser and their CLI equivalents
 

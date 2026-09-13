@@ -228,6 +228,8 @@ test("history and review routes are metadata-only shells that never select an at
   await expect(page.getByRole("heading", { name: "Attempt history", level: 1 })).toBeVisible();
 
   const reviewed = "0f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
+  // No such attempt: the review route reads metadata (404) and recovers.
+  requestPolicy.expectHttpError({ method: "GET", path: `/api/attempts/${reviewed}/review`, status: 404 });
   await page.goto(`${harness.origin}/history/review/${reviewed}`);
   await expect(page.getByRole("heading", { name: "Attempt review", level: 1 })).toBeFocused();
   await expect(page.getByRole("main")).toHaveAttribute("data-review-attempt-id", reviewed);

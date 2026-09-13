@@ -152,6 +152,32 @@ class AttemptReviewTests(unittest.TestCase):
         self.assertIsNone(review.source)
         self.assertIsNone(review.score)
 
+    def test_ended_attempt_reports_its_last_practice_result_not_a_submission(self) -> None:
+        state, attempt = self.start()
+        tested = self.service.test(state.attempt_id)
+        ended = self.service.abandon(
+            state.attempt_id, expected_revision=tested.revision
+        ).state
+        self.scorer.allowed = False
+
+        review = self.read_without_side_effects(state.attempt_id, attempt)
+
+        self.assertEqual(review.status, "abandoned")
+        self.assertEqual(review.source_binding, NOT_APPLICABLE)
+        self.assertIsNone(review.source)
+        self.assertIsNone(review.score)
+        self.assertEqual(review.practice_score, tested.score)
+        self.assertEqual(review.practice_score, ended.abandonment.practice_score)
+        document = review.to_dict()
+        self.assertIsNone(document["score"])
+        self.assertEqual(document["practice_score"], tested.score.to_dict())
+        # A submitted review never carries a practice result.
+        self.scorer.allowed = True
+        submitted, submitted_attempt = self.submit()
+        self.assertIsNone(
+            self.read_without_side_effects(submitted.attempt_id, submitted_attempt).practice_score
+        )
+
     def test_unreadable_source_at_submission_is_reported_as_not_captured(self) -> None:
         state, attempt = self.start()
         (attempt / "simulation.py").unlink()

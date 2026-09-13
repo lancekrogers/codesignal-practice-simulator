@@ -11,7 +11,9 @@ export type ApiAction =
   | "testing"
   | "submitting"
   | "ending"
-  | "restarting";
+  | "restarting"
+  | "history"
+  | "review";
 
 export type SafeApiFailure = {
   kind:
@@ -215,6 +217,8 @@ export function describeApiError(
   if (action === "ending" || action === "restarting") {
     return describeLifecycleError(error, action);
   }
+  if (action === "history") return describeHistoryError(error);
+  if (action === "review") return describeReviewError(error);
   switch (error.code) {
     case "session_unavailable":
       return {
@@ -250,6 +254,71 @@ export function describeApiError(
         recovery: action === "start" || action === "bootstrap"
           ? "reload"
           : "reconnect",
+      };
+  }
+}
+
+function describeReviewError(error: ApiError): SafeApiFailure {
+  switch (error.code) {
+    case "session_unavailable":
+      return {
+        kind: "unavailable",
+        message: "No attempt with this address is stored locally. It may have been removed, or the address may be mistyped.",
+        recovery: "none",
+      };
+    case "review_pending":
+      return {
+        kind: "pending",
+        message: "This attempt is still being finalized. Retry loading in a moment; nothing is changed by waiting.",
+        recovery: "retry",
+      };
+    case "invalid_input":
+      return {
+        kind: "stale",
+        message: "This review address is not valid.",
+        recovery: "none",
+      };
+    case "reconnect":
+      return {
+        kind: "reconnect",
+        message: "The local simulator could not be reached. Check that it is running, then retry loading.",
+        recovery: "retry",
+      };
+    default:
+      return {
+        kind: "internal",
+        message: "The stored review could not be read safely. It may be incomplete or altered; nothing was changed. Retry loading, or return to history.",
+        recovery: "retry",
+      };
+  }
+}
+
+function describeHistoryError(error: ApiError): SafeApiFailure {
+  switch (error.code) {
+    case "invalid_input":
+    case "invalid_query":
+      return {
+        kind: "stale",
+        message: "The page position or filters in this address are not valid. Show the newest attempts to continue.",
+        recovery: "refresh",
+      };
+    case "history_unavailable":
+      return {
+        kind: "unavailable",
+        message: "Attempt history is unavailable: the local attempts folder could not be read safely. Check the workspace, then retry.",
+        recovery: "retry",
+      };
+    case "reconnect":
+      return {
+        kind: "reconnect",
+        message: "The local simulator could not be reached. Check that it is running, then retry.",
+        recovery: "retry",
+      };
+    default:
+      return {
+        kind: "internal",
+        message: "Attempt history could not be loaded safely. Retry, or show the newest attempts.",
+        recovery: "retry",
       };
   }
 }
@@ -320,6 +389,12 @@ function genericMessage(action: ApiAction): string {
   }
   if (action === "restarting") {
     return "Restart could not complete safely. Choose Restart again; the same operation is retried.";
+  }
+  if (action === "history") {
+    return "Attempt history could not be loaded safely. Retry, or show the newest attempts.";
+  }
+  if (action === "review") {
+    return "The stored review could not be read safely. It may be incomplete or altered; nothing was changed. Retry loading, or return to history.";
   }
   return "The local simulator could not complete this entry action safely. Reconnect and try again.";
 }
