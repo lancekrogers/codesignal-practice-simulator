@@ -11,6 +11,8 @@ import { runEvaluation } from "./attempt_evaluation";
 import type { EvaluationContext } from "./attempt_evaluation";
 import type { OperationLease } from "./attempt_operation_lock";
 import { applyRuntimeTime } from "./attempt_runtime_lifecycle";
+import { navigateTo } from "./router";
+import { endAttempt, restartAttempt } from "./attempt_lifecycle_actions";
 
 export function shellCallbacks(runtime: AttemptRuntime): ShellCallbacks {
   return {
@@ -24,6 +26,8 @@ export function shellCallbacks(runtime: AttemptRuntime): ShellCallbacks {
     onRestore: (snapshotId, opener) =>
       restoreSnapshot(runtime, snapshotId, opener),
     onReset: (opener) => resetSnapshot(runtime, opener),
+    onEnd: (opener) => endAttempt(runtime, opener),
+    onRestart: (opener) => restartAttempt(runtime, opener),
   };
 }
 
@@ -40,9 +44,9 @@ function leaveAttempt(runtime: AttemptRuntime, opener: HTMLElement): void {
       return;
     }
     runtime.cleanup();
-    // Bootstrap reloads the selected session without changing its lifecycle.
-    // Retain the non-secret view fragment so reconnect restores the selected tab.
-    window.location.reload();
+    // The library route reloads the selected session's metadata without
+    // changing its lifecycle; the attempt stays reconnectable from there.
+    navigateTo({ kind: "library" });
   };
   if (runtime.state.session.status !== "active") {
     leave();
@@ -50,7 +54,7 @@ function leaveAttempt(runtime: AttemptRuntime, opener: HTMLElement): void {
   }
   runtime.elements.confirmAction(
     "Leave assessment?",
-    "Return to the start page without submitting. The timer keeps running; you can reconnect to this attempt. Saved changes are kept. Any unsaved local edits will be lost; cancel and save first if needed.",
+    "Return to the library without submitting. The timer keeps running; you can reconnect to this attempt. Saved changes are kept. Any unsaved local edits will be lost; cancel and save first if needed.",
     "Leave assessment",
     opener,
     leave,

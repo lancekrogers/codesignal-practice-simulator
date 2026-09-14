@@ -16,7 +16,7 @@ import re
 
 from ..application import RuntimeApplication, create_application
 from .responses import HttpResponse, encode, failure
-from .routes import RouteHandler
+from .routes import RouteHandler, is_shell_path
 from .security import RequestError, request_path
 
 
@@ -367,7 +367,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
             canonical_path, _query = request_path(raw_path)
         except RequestError:
             canonical_path = ""
-        if canonical_path in {"/", "/index.html"}:
+        if is_shell_path(canonical_path):
             self.send_header(
                 "Content-Security-Policy",
                 "default-src 'self'; script-src 'self'; "

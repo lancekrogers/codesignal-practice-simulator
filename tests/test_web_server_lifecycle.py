@@ -18,8 +18,10 @@ from codesignal_practice_simulator.web.server import WebServer, WebServerConfig
 class TestWebServerLifecycle(WebServerTestCase):
     def test_concurrent_save_test_submit_and_attempt_content_are_isolated(self) -> None:
         first, etag = self.start_attempt()
-        second = self.application.start(
-            assessment="file_storage",
+        # A second live attempt comes from the unguarded lifecycle primitive:
+        # every transport-facing start refuses to displace live selected work.
+        second = self.application.lifecycle.start(
+            self.application.registry.require("file_storage").metadata,
             mode="drill",
             drill_duration_seconds=60,
         ).attempt_id

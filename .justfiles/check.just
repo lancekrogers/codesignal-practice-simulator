@@ -16,6 +16,10 @@ verify interpreter=python:
 unit:
     '{{python}}' -m unittest discover -s tests -v
 
+# Bundled original exercises: allowlisted files, manifest hashes, runner entry points.
+content:
+    '{{python}}' scripts/check_content.py
+
 # Frontend metadata, lockfile and licensing (not TypeScript checking).
 frontend:
     npm --prefix webui run check

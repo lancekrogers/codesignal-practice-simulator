@@ -1791,6 +1791,15 @@ function isDocumentedRequest(path) {
   ) {
     return true;
   }
+  // Browser application routes documented in docs/cli-contract.md ("Browser
+  // routes"): the server answers them with the shell, the client validates.
+  if (
+    path === "/history" ||
+    /^\/attempt\/[A-Za-z0-9-]+$/u.test(path) ||
+    /^\/history\/review\/[A-Za-z0-9-]+$/u.test(path)
+  ) {
+    return true;
+  }
   if (path.startsWith("/api/")) {
     return (
       [
@@ -1804,7 +1813,8 @@ function isDocumentedRequest(path) {
         "/api/test",
         "/api/submit",
       ].includes(path) ||
-      /^\/api\/prompts\/[1-4]$/u.test(path)
+      /^\/api\/prompts\/[1-4]$/u.test(path) ||
+      /^\/api\/attempts\/[0-9a-f-]{36}\/(?:abandon|restart|review)$/u.test(path)
     );
   }
   return /^\/[A-Za-z0-9._-]+\.(?:js|css|ttf)$/u.test(path);

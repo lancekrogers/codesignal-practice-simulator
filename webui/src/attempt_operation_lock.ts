@@ -1,4 +1,4 @@
-export type OperationKind = "evaluation" | "source";
+export type OperationKind = "evaluation" | "source" | "lifecycle";
 
 export type OperationLease = {
   kind: OperationKind;

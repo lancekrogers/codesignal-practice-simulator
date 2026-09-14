@@ -21,6 +21,9 @@ where = ["src"]
 [tool.setuptools.package-data]
 codesignal_practice_simulator = [
     "resources/*.json",
+    "resources/assessments/*/*.md",
+    "resources/assessments/*/*.py",
+    "resources/assessments/*/*.json",
     "web/static/*.css",
     "web/static/*.html",
     "web/static/*.js",

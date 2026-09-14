@@ -1,0 +1,13 @@
+{
+  "assessment_id": "account_ledger",
+  "content_version": "ledger-1",
+  "files": {
+    "level1.md": "15e37e09858d8bfa1bff2a622c24936e72746adbd8f341d9a8ad82867a98e470",
+    "level2.md": "33ef6db82d29fb9b3f9252fd64df92aa975300cf7fdda67314bb704f55be3040",
+    "level3.md": "040b1ec93a84963010dbb4eb39294e629e1701487a26aed6731d982d259825ac",
+    "level4.md": "f72143d6b60a78eb7d96215cf92d5639a8e92f4a7fc6eaeb082aa6afd4dc92cd",
+    "simulation.py": "43badae3e83db6ccc2352faf834f30773dba391917b6a638f64112525c15fbb9",
+    "test_simulation.py": "5921288184ddca05bfdaff8902584bac669858001e43aef3c75b4b2525de4599"
+  },
+  "schema_version": "assessment-package/v1"
+}

@@ -6,6 +6,7 @@ import hashlib
 import os
 import sys
 import tempfile
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -20,9 +21,16 @@ from codesignal_practice_simulator.models import (  # noqa: E402
     FULL_MODE,
     FULL_PROFILE,
     SESSION_SCHEMA_VERSION,
+    SUBMITTED,
     AssessmentMetadata,
     ModeProfile,
+    ReviewRecord,
+    ReviewSource,
+    ScoreSummary,
+    SessionRecord,
     SessionState,
+    SessionStateV2,
+    review_digest,
 )
 from codesignal_practice_simulator.workspace import (  # noqa: E402
     CACHE_INPUTS,
@@ -45,6 +53,39 @@ def session(attempt_id: str) -> SessionState:
     )
 
 
+def submitted_with_review(
+    state: SessionRecord,
+    score: ScoreSummary,
+    submitted_at: datetime,
+    source: ReviewSource | None = None,
+) -> tuple[SessionRecord, ReviewRecord]:
+    """Build a submitted state and the immutable review it identifies.
+
+    A submitted session/v2 record must carry its review digest, so tests that
+    fabricate terminal states build both together.
+    """
+    revision = state.revision + 1
+    review = ReviewRecord.plan(
+        state,
+        revision=revision,
+        submitted_at=submitted_at,
+        score=score,
+        source=source,
+    )
+    changes: dict[str, object] = {}
+    if isinstance(state, SessionStateV2):
+        changes["review_digest"] = review_digest(review)
+    submitted = replace(
+        state,
+        status=SUBMITTED,
+        revision=revision,
+        score=score,
+        submitted_at=submitted_at,
+        **changes,
+    )
+    return submitted, review
+
+
 def make_cache(root: Path) -> ValidatedFixtureCache:
     cache = root / "cache"
     hashes: dict[str, str] = {}
@@ -60,7 +101,7 @@ def make_cache(root: Path) -> ValidatedFixtureCache:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         hashes[relative] = hashlib.sha256(data).hexdigest()
-    return ValidatedFixtureCache(cache, hashes)
+    return ValidatedFixtureCache(cache, hashes, content_version="upstream-0000000")
 
 
 def tree_bytes(root: Path) -> dict[str, bytes]:
@@ -216,6 +257,7 @@ __all__ = [
     "existing_attempt",
     "make_cache",
     "session",
+    "submitted_with_review",
     "tree_bytes",
     "tree_snapshot",
     "workspace_environment",

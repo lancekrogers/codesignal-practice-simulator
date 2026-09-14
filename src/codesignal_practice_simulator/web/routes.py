@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from http.server import BaseHTTPRequestHandler
 
 from ..application import EvaluationSnapshot, RuntimeApplication
@@ -93,7 +94,12 @@ class RouteHandler:
             )
         if query:
             return failure(404, "not_found", "resource is not available")
-        name = "index.html" if path == "/" else path.removeprefix("/")
+        # Browser application routes reload to the same shell; the client parses
+        # and validates the path. Nothing under a nested path resolves to an asset.
+        if is_shell_path(path):
+            name = "index.html"
+        else:
+            name = path.removeprefix("/")
         if "/" in name:
             return failure(404, "not_found", "resource is not available")
         try:
@@ -119,8 +125,16 @@ class RouteHandler:
     ) -> HttpResponse:
         if path == "/api/bootstrap":
             return self._read(method, "GET", query, self.application.bootstrap)
+        if path == "/api/catalog":
+            return self._read(
+                method, "GET", query, lambda: self.application.catalog().to_dict()
+            )
         if path == "/api/attempts":
+            if method == "GET":
+                return self._list_attempts(query)
             return self._start(method, query, handler)
+        if path.startswith("/api/attempts/"):
+            return self._attempt_action(method, path, query, handler)
         if path == "/api/source" and method == "PUT":
             return self._save_source(method, query, handler)
         if path in {"/api/session", "/api/time", "/api/source", "/api/source/history"}:
@@ -204,6 +218,93 @@ class RouteHandler:
             _evaluation_snapshot(snapshot),
             status=201,
         )
+
+    def _list_attempts(self, query: str) -> HttpResponse:
+        """GET /api/attempts: bounded metadata history, never a selection change."""
+        values = optional_query_values(query, _HISTORY_QUERY_KEYS)
+        limit: int | None = None
+        if "limit" in values:
+            if _DECIMAL.fullmatch(values["limit"]) is None:
+                raise RequestError(400, "invalid_query", "query parameters are invalid")
+            limit = int(values["limit"])
+        filters = {key: values[key] for key in ("status", "assessment_id") if key in values}
+        try:
+            page = self.application.list_attempts(
+                filters=filters or None,
+                cursor=values.get("cursor"),
+                limit=limit,
+            )
+        except InvalidInputError as error:
+            # Cursor, filter and limit messages are safe domain text with no paths;
+            # the CLI prints the same words, so both transports agree.
+            raise RequestError(422, "invalid_input", error.message) from error
+        except SessionUnavailableError as error:
+            # An unsafe or unreadable attempts directory is a workspace problem,
+            # not "the selected session"; say so without naming any path.
+            raise RequestError(
+                404, "history_unavailable", "attempt history is unavailable"
+            ) from error
+        return success(page.to_dict())
+
+    def _attempt_action(
+        self,
+        method: str,
+        path: str,
+        query: str,
+        handler: BaseHTTPRequestHandler,
+    ) -> HttpResponse:
+        """/api/attempts/{uuid}/(review|abandon|restart); the ID is validated first."""
+        segments = path.split("/")
+        if len(segments) != 5 or segments[4] not in _ATTEMPT_ACTIONS:
+            return failure(404, "not_found", "API route is not available")
+        attempt_id = canonical_uuid(segments[3])
+        action = segments[4]
+        if action == "review":
+            _require_method(method, "GET")
+            values = optional_query_values(query, frozenset({"include_source"}))
+            include_source = values.get("include_source", "true")
+            if include_source not in {"true", "false"}:
+                raise RequestError(400, "invalid_query", "query parameters are invalid")
+            review = self.application.review(
+                attempt_id=attempt_id, include_source=include_source == "true"
+            )
+            return success(review.to_dict())
+        _require_method(method, "POST")
+        if query:
+            optional_query_values(query, frozenset())
+        require_origin(handler, self.origin)
+        body = json_body(handler)
+        if action == "abandon":
+            exact_fields(body, frozenset({"expected_revision"}))
+            result = self.application.abandon(
+                attempt_id=attempt_id,
+                expected_revision=_revision(body["expected_revision"]),
+            )
+            return success(result.to_dict())
+        exact_fields(
+            body,
+            frozenset({"operation_id", "expected_revision"}),
+            frozenset({"mode", "drill_duration_seconds"}),
+        )
+        operation_id = body["operation_id"]
+        if not isinstance(operation_id, str):
+            raise RequestError(422, "invalid_input", "operation ID is invalid")
+        mode = body.get("mode")
+        if mode is not None and mode not in {"full", "drill"}:
+            raise RequestError(422, "invalid_input", "restart fields are invalid")
+        duration = body.get("drill_duration_seconds")
+        if duration is not None and (
+            isinstance(duration, bool) or not isinstance(duration, int) or duration <= 0
+        ):
+            raise RequestError(422, "invalid_input", "drill duration is invalid")
+        restarted = self.application.restart(
+            attempt_id=attempt_id,
+            operation_id=canonical_uuid(operation_id, "operation ID"),
+            expected_revision=_revision(body["expected_revision"]),
+            mode=mode,
+            drill_duration_seconds=duration,
+        )
+        return success(restarted.to_dict(), status=200 if restarted.replayed else 201)
 
     def _read_selected(
         self,
@@ -301,9 +402,40 @@ class RouteHandler:
             )
         return success(_evaluation_snapshot(snapshot))
 
+# Client-side routes that must survive a reload: library is "/", everything
+# under /attempt and /history belongs to the browser route model. The path
+# never selects a file (the shell is served unchanged), so a mistyped or
+# unknown address reaches the client's "page not found" recovery instead of a
+# bare JSON error, and no path segment can name a packaged asset.
+_APP_ROUTE = re.compile(r"/(?:attempt|history)(?:/.*)?")
+
+
+def is_shell_path(path: str) -> bool:
+    """Whether a canonical request path serves the browser shell (index.html)."""
+    return path in {"/", "/index.html"} or _APP_ROUTE.fullmatch(path) is not None
+_HISTORY_QUERY_KEYS = frozenset({"status", "assessment_id", "cursor", "limit"})
+_ATTEMPT_ACTIONS = frozenset({"review", "abandon", "restart"})
+_DECIMAL = re.compile(r"(0|[1-9][0-9]*)\Z")
+# Specific domain codes that the browser must distinguish from a locked
+# lifecycle: conflicts the client resolves by refreshing, and pending states it
+# resolves by retrying. A live selection keeps the existing 423 contract.
+_SPECIFIC_CODE_STATUS = {
+    "stale_revision": 409,
+    "operation_conflict": 409,
+    "recovery_pending": 503,
+    "review_pending": 503,
+}
+
+
 def _attempt_id(query: str) -> str:
     values = query_values(query, frozenset({"attempt_id"}))
     return canonical_uuid(values["attempt_id"])
+
+
+def _revision(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RequestError(422, "invalid_input", "expected revision is invalid")
+    return value
 
 
 def _require_method(actual: str, expected: str) -> None:
@@ -317,6 +449,9 @@ def _require_method(actual: str, expected: str) -> None:
 
 
 def _domain_failure(error: DomainError) -> HttpResponse:
+    specific = getattr(error, "code", None)
+    if isinstance(specific, str) and specific in _SPECIFIC_CODE_STATUS:
+        return failure(_SPECIFIC_CODE_STATUS[specific], specific, error.message)
     if isinstance(error, CandidateDocumentConflictError):
         return failure(
             409,

@@ -44,6 +44,7 @@ from codesignal_practice_simulator.persistence import (
 )
 from codesignal_practice_simulator.scoring import IsolatedAttemptScorer
 from codesignal_practice_simulator.workspace import CACHE_INPUTS, ValidatedFixtureCache
+from tests.workspace_test_support import submitted_with_review
 
 
 CANONICAL_ATTEMPT = "123e4567-e89b-12d3-a456-426614174000"
@@ -129,7 +130,7 @@ def synthetic_runtime_fixture() -> tuple[dict[str, object], dict[str, bytes]]:
     return (
         {
             "fixture_cache_root": ".cache/codesignal-fixtures/synthetic",
-            "upstream": {"repository": "example/fixtures", "commit": "offline"},
+            "upstream": {"repository": "example/fixtures", "commit": "0ff11e0"},
             "fetches": [
                 {
                     "upstream_path": upstream_path,
@@ -262,6 +263,11 @@ class CliTests(unittest.TestCase):
                 "task",
                 "test",
                 "submit",
+                "abandon",
+                "restart",
+                "history",
+                "review",
+                "catalog",
                 "context",
                 "web",
             },
@@ -269,10 +275,16 @@ class CliTests(unittest.TestCase):
         for name, command in commands.items():
             options = {option for action in command._actions for option in action.option_strings}
             self.assertTrue({"--json", "--workspace-root"} <= options, name)
-            if name in ("fetch", "start", "web"):
+            if name in ("fetch", "start", "web", "history", "catalog"):
                 self.assertNotIn("--attempt", options)
             else:
                 self.assertIn("--attempt", options)
+            if name in ("abandon", "restart"):
+                self.assertIn("--expected-revision", options)
+        restart_options = {
+            option for action in commands["restart"]._actions for option in action.option_strings
+        }
+        self.assertTrue({"--operation-id", "--mode", "--drill-duration-seconds"} <= restart_options)
         context_options = {
             option for action in commands["context"]._actions for option in action.option_strings
         }
@@ -504,6 +516,7 @@ class RuntimeCliTests(unittest.TestCase):
                 for path in self.cache.rglob("*")
                 if path.is_file()
             },
+            content_version="upstream-0000000",
         )
 
     def tearDown(self) -> None:
@@ -519,10 +532,13 @@ class RuntimeCliTests(unittest.TestCase):
         return code, json.loads(output.getvalue())
 
     def runtime_application(self, workspace_root: Path) -> RuntimeApplication:
-        """Use synthetic fixture bytes while exercising the production adapter."""
-        application = RuntimeApplication(workspace_root, clock=self.clock)
-        application.workspace.cache = self.runtime_cache
-        return application
+        """Use synthetic fixture bytes while exercising the production adapter.
+
+        The cache is injected at construction: input providers are built from it
+        there, so swapping the attribute afterwards would leave the fetched
+        provider pointed at the packaged manifest's cache location.
+        """
+        return RuntimeApplication(workspace_root, clock=self.clock, cache=self.runtime_cache)
 
     @staticmethod
     def session(document: dict[str, object]) -> dict[str, object]:
@@ -561,6 +577,22 @@ class RuntimeCliTests(unittest.TestCase):
         self.assertEqual(full["profile"]["duration_seconds"], FULL_DURATION_SECONDS)  # type: ignore[index]
         self.assertEqual(full["deadline_at"], "2026-09-08T20:30:00+00:00")
         full_attempt = self.workspace / "attempts" / full["attempt_id"]  # type: ignore[operator]
+
+        # A plain start never displaces a live selected attempt (D001); ending
+        # the full attempt explicitly is the resolution that lets a drill begin.
+        code, ended = self.execute(
+            [
+                "abandon",
+                "--workspace-root",
+                str(self.workspace),
+                "--expected-revision",
+                "0",
+                "--json",
+            ]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(self.session(ended)["status"], "abandoned")
+        self.assertTrue(ended["result"]["newly_abandoned"])  # type: ignore[index]
 
         code, drill_document = self.execute(
             [
@@ -612,7 +644,7 @@ class RuntimeCliTests(unittest.TestCase):
                 self.assertIn("codesignal-sim fetch", document["error"]["message"])  # type: ignore[index]
                 self.assertFalse((workspace / "attempts").exists())
 
-    def test_unregistered_persisted_assessment_is_corrupt_in_json_and_human_output(self) -> None:
+    def test_uninstalled_pinned_assessment_is_unavailable_in_json_and_human_output(self) -> None:
         started = self.session(
             self.execute(["start", "--workspace-root", str(self.workspace), "--json"])[1]
         )
@@ -627,7 +659,8 @@ class RuntimeCliTests(unittest.TestCase):
         self.assertEqual(code, 3)
         self.assertEqual(document["error"]["code"], "session_unavailable")  # type: ignore[index]
         self.assertEqual(
-            document["error"]["message"], "selected attempt assessment is not registered"  # type: ignore[index]
+            document["error"]["message"],  # type: ignore[index]
+            "attempt content version is not installed; stored results remain reviewable",
         )
 
         output = io.StringIO()
@@ -640,7 +673,7 @@ class RuntimeCliTests(unittest.TestCase):
         self.assertEqual(
             output.getvalue(),
             "[cli/v1] error (session_unavailable): "
-            "selected attempt assessment is not registered\n",
+            "attempt content version is not installed; stored results remain reviewable\n",
         )
         self.assertNotIn("Traceback", output.getvalue())
 
@@ -654,6 +687,17 @@ class RuntimeCliTests(unittest.TestCase):
         first = self.session(
             self.execute(["start", "--workspace-root", str(self.workspace), "--json"])[1]
         )
+        code, _ended = self.execute(
+            [
+                "abandon",
+                "--workspace-root",
+                str(self.workspace),
+                "--expected-revision",
+                "0",
+                "--json",
+            ]
+        )
+        self.assertEqual(code, 0)
         second = self.session(
             self.execute(["start", "--workspace-root", str(self.workspace), "--json"])[1]
         )
@@ -750,12 +794,10 @@ class RuntimeCliTests(unittest.TestCase):
         attempt = self.workspace / "attempts" / started["attempt_id"]  # type: ignore[operator]
         adapter = self.runtime_application(self.workspace)
         state = adapter.workspace.persistence.read_session(attempt)
-        submitted = replace(
+        submitted, _review = submitted_with_review(
             state,
-            status=SUBMITTED,
-            revision=1,
-            score=ScoreSummary(tuple(LevelResult(level, "passed") for level in range(1, 5))),
-            submitted_at=START,
+            ScoreSummary(tuple(LevelResult(level, "passed") for level in range(1, 5))),
+            START,
         )
         adapter.workspace.persistence.write_session(attempt, submitted)
         before = file_bytes(attempt)
@@ -973,9 +1015,13 @@ class RuntimeCliTests(unittest.TestCase):
             return code, json.loads(output.getvalue())
 
         started = self.session(invoke(["start"])[1])
-        _neighbor = self.session(invoke(["start"])[1])
+        # A live neighbor is created through the unguarded primitive: the CLI
+        # start refuses to displace the live selected attempt.
+        _neighbor = application.lifecycle.start(
+            application.registry.require("file_storage").metadata
+        )
         attempt = self.workspace / "attempts" / started["attempt_id"]  # type: ignore[operator]
-        neighbor = self.workspace / "attempts" / _neighbor["attempt_id"]  # type: ignore[operator]
+        neighbor = self.workspace / "attempts" / _neighbor.attempt_id
         candidate_before = (attempt / "simulation.py").read_bytes()
         neighbor_before = file_bytes(neighbor)
         cache_before = file_bytes(self.cache)

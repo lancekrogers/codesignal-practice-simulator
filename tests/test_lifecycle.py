@@ -16,7 +16,9 @@ PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT / "src"))
 
 from codesignal_practice_simulator.errors import (
+    AssessmentVersionUnavailableError,
     IllegalLifecycleError,
+    LiveSelectionError,
     LockUnavailableError,
     SessionCorruptError,
 )
@@ -27,16 +29,19 @@ from codesignal_practice_simulator.models import (
     DRILL_DEFAULT_DURATION_SECONDS,
     EXPIRED,
     FULL_DURATION_SECONDS,
+    SESSION_SCHEMA_VERSION,
     SUBMITTED,
     AssessmentMetadata,
     LevelResult,
     ScoreSummary,
+    SessionState,
 )
 from codesignal_practice_simulator.workspace import (
     CACHE_INPUTS,
     ValidatedFixtureCache,
     WorkspaceManager,
 )
+from tests.workspace_test_support import submitted_with_review
 from codesignal_practice_simulator.persistence import (
     SUBMISSION_RECOVERY_FILENAME,
     Persistence,
@@ -104,7 +109,7 @@ def make_cache(root: Path) -> ValidatedFixtureCache:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         hashes[relative] = hashlib.sha256(data).hexdigest()
-    return ValidatedFixtureCache(cache, hashes)
+    return ValidatedFixtureCache(cache, hashes, content_version="upstream-0000000")
 
 
 def durable_bytes(attempt: Path) -> tuple[bytes, bytes]:
@@ -147,19 +152,30 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(full_attempt.exists(), True)
         self.assertEqual(DRILL_DEFAULT_DURATION_SECONDS, 1800)
 
-    def test_explicit_active_resume_replaces_selection(self) -> None:
+    def test_explicit_resume_replaces_selection_only_when_the_selected_attempt_is_not_live(self) -> None:
         first, first_attempt = self.start()
-        second, second_attempt = self.start()
+        second, second_attempt = self.start(mode="drill", drill_duration_seconds=60)
         first_before = durable_bytes(first_attempt)
         second_before = durable_bytes(second_attempt)
 
+        # Naming another attempt never displaces live selected work (D001).
+        with self.assertRaisesRegex(LiveSelectionError, "already selected"):
+            self.service.resume(first.attempt_id)
+        self.assertEqual(self.manager.resolve_attempt(), second_attempt)
+        self.assertEqual(durable_bytes(first_attempt), first_before)
+        self.assertEqual(durable_bytes(second_attempt), second_before)
+
+        # Once the selected attempt is no longer live, the explicit resume selects.
+        self.clock.value = second.deadline_at
         resumed = self.service.resume(first.attempt_id)
 
         self.assertEqual(resumed, first)
         self.assertEqual(self.manager.resolve_attempt(), first_attempt)
         self.assertNotEqual(first_attempt, second_attempt)
         self.assertEqual(durable_bytes(first_attempt), first_before)
-        self.assertEqual(durable_bytes(second_attempt), second_before)
+        self.assertEqual(
+            self.manager.persistence.read_session(second_attempt).status, EXPIRED
+        )
 
     def test_status_and_time_before_deadline_are_safe_reads(self) -> None:
         state, attempt = self.start()
@@ -176,19 +192,35 @@ class LifecycleTests(unittest.TestCase):
 
     def test_locked_state_read_rejects_a_registry_mismatch(self) -> None:
         state, attempt = self.start()
-        replaced = replace(
-            state,
+        removed_pin = replace(state.assessment, assessment_id="removed_assessment")
+        legacy = SessionState(
+            schema_version=SESSION_SCHEMA_VERSION,
+            attempt_id=state.attempt_id,
             assessment=AssessmentMetadata("removed_assessment", "Removed Assessment"),
+            profile=state.profile,
+            started_at=state.started_at,
+            deadline_at=state.deadline_at,
+            status=ACTIVE,
+            revision=state.revision,
         )
-        with patch.object(
-            self.manager.persistence,
-            "read_session",
-            return_value=replaced,
-        ):
-            with self.assertRaisesRegex(
-                SessionCorruptError, "assessment is not registered"
-            ):
-                self.service.status()
+        cases = (
+            # A pinned attempt whose definition is gone keeps its results reviewable.
+            (replace(state, assessment=removed_pin), AssessmentVersionUnavailableError,
+             "content version is not installed"),
+            (replace(state, assessment=replace(state.assessment, content_digest="0" * 64)),
+             AssessmentVersionUnavailableError, "content version is not installed"),
+            # A legacy record naming an unregistered assessment is still corrupt.
+            (legacy, SessionCorruptError, "assessment is not registered"),
+        )
+        for replaced, error, message in cases:
+            with self.subTest(error=error.__name__, message=message):
+                with patch.object(
+                    self.manager.persistence,
+                    "read_session",
+                    return_value=replaced,
+                ):
+                    with self.assertRaisesRegex(error, message):
+                        self.service.status()
 
         self.assertTrue(attempt.exists())
 
@@ -320,12 +352,12 @@ class LifecycleTests(unittest.TestCase):
             for command in ("resume", "test", "record_test_result"):
                 with self.subTest(status=status, command=command):
                     state, attempt = self.start()
-                    terminal = replace(
-                        state,
-                        status=status,
-                        revision=state.revision + 1,
-                        score=score() if status == SUBMITTED else None,
-                        submitted_at=state.started_at if status == SUBMITTED else None,
+                    terminal = (
+                        submitted_with_review(state, score(), state.started_at)[0]
+                        if status == SUBMITTED
+                        else replace(
+                            state, status=status, revision=state.revision + 1
+                        )
                     )
                     self.manager.persistence.write_session(attempt, terminal)
                     before = durable_bytes(attempt)
@@ -432,13 +464,7 @@ class LifecycleTests(unittest.TestCase):
 
     def test_repeat_submit_without_scorer_preserves_submitted_missing_event_bytes(self) -> None:
         state, attempt = self.start()
-        submitted = replace(
-            state,
-            status=SUBMITTED,
-            revision=state.revision + 1,
-            score=score(),
-            submitted_at=state.started_at,
-        )
+        submitted, _review = submitted_with_review(state, score(), state.started_at)
         self.manager.persistence.write_session(attempt, submitted)
         before = durable_bytes(attempt)
         without_scorer = LifecycleService(self.manager, self.clock)

@@ -4,6 +4,7 @@ import type {
   AttemptStatus,
   Bootstrap,
   BootstrapTime,
+  CatalogEntry,
   EvaluationPayload,
   PracticeLevelResult,
   PracticeResult,
@@ -40,17 +41,81 @@ export function normalizeBootstrap(value: unknown): Bootstrap {
   if (!validBootstrap(assessment, levels, profiles, rules)) {
     throw new Error("bootstrap is invalid");
   }
+  const primary = {
+    assessment_id: assessment.assessment_id as string,
+    display_name: assessment.display_name as string,
+    level_count: 4 as const,
+  };
   return {
-    assessment: {
-      assessment_id: assessment.assessment_id,
-      display_name: assessment.display_name,
-      level_count: 4,
-    },
+    assessment: primary,
     levels,
     profiles,
     rules: rules as string[],
+    catalog: normalizeCatalog(data.catalog, primary, levels, profiles),
     session: data.session == null ? null : normalizeSession(data.session),
     time: data.time == null ? null : normalizeBootstrapTime(data.time),
+  };
+}
+
+function normalizeCatalog(
+  value: unknown,
+  primary: Bootstrap["assessment"],
+  levels: Array<{ level: number; label: string }>,
+  profiles: Profile[],
+): CatalogEntry[] {
+  if (value === undefined) {
+    // An older server without a catalog list still describes one assessment.
+    return [{
+      assessment_id: primary.assessment_id,
+      display_name: primary.display_name,
+      description: "",
+      levels,
+      profiles,
+      provider_kind: "pinned-fetched",
+      content_version: null,
+      available: true,
+      setup: null,
+      setup_message: null,
+    }];
+  }
+  const entries = list(value, "catalog").map(normalizeCatalogEntry);
+  if (entries.length === 0) throw new Error("bootstrap is invalid");
+  if (!entries.some((entry) => entry.assessment_id === primary.assessment_id)) {
+    throw new Error("bootstrap is invalid");
+  }
+  return entries;
+}
+
+function normalizeCatalogEntry(value: unknown): CatalogEntry {
+  const item = record(value, "catalog entry");
+  const levels = list(item.levels, "catalog levels").map(normalizeLevel);
+  const profiles = list(item.profiles, "catalog profiles").map(normalizeProfile);
+  if (
+    typeof item.assessment_id !== "string" ||
+    typeof item.display_name !== "string" ||
+    typeof item.description !== "string" ||
+    typeof item.provider_kind !== "string" ||
+    typeof item.available !== "boolean" ||
+    (item.content_version !== null && typeof item.content_version !== "string") ||
+    (item.setup !== null && typeof item.setup !== "string") ||
+    (item.setup_message !== null && typeof item.setup_message !== "string") ||
+    levels.length !== 4 ||
+    !profiles.some((profile) => profile.mode === "full") ||
+    !profiles.some((profile) => profile.mode === "drill")
+  ) {
+    throw new Error("catalog entry is invalid");
+  }
+  return {
+    assessment_id: item.assessment_id,
+    display_name: item.display_name,
+    description: item.description,
+    levels,
+    profiles,
+    provider_kind: item.provider_kind,
+    content_version: item.content_version,
+    available: item.available,
+    setup: item.setup,
+    setup_message: item.setup_message,
   };
 }
 
@@ -391,7 +456,8 @@ function exactKeys(
 }
 
 function isAttemptStatus(value: unknown): value is AttemptStatus {
-  return value === "active" || value === "expired" || value === "submitted";
+  return value === "active" || value === "expired" || value === "submitted" ||
+    value === "abandoned";
 }
 
 function record(value: unknown, label: string): Record<string, any> {

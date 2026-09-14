@@ -73,10 +73,14 @@ function createShellParts(
     ),
     actions: createActionBar(
       state.selectedLevel,
-      callbacks.onReset,
-      callbacks.onLevelNavigate,
-      callbacks.onRunTests,
-      callbacks.onSubmit,
+      {
+        onReset: callbacks.onReset,
+        onNavigate: callbacks.onLevelNavigate,
+        onRunTests: callbacks.onRunTests,
+        onSubmit: callbacks.onSubmit,
+        onEnd: callbacks.onEnd,
+        onRestart: callbacks.onRestart,
+      },
       state.session.status === "active",
     ),
     disposables: [

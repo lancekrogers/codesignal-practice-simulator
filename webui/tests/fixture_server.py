@@ -53,6 +53,7 @@ def _serve(workspace: Path) -> None:
         json.dumps(
             {
                 "fixture_cache_root": ".cache/codesignal-fixtures/synthetic",
+                "upstream": {"repository": "synthetic/browser-fixture", "commit": "b0b0b0b"},
                 "fetches": fetches,
             }
         ),

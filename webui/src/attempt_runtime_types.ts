@@ -27,6 +27,13 @@ export type AttemptRuntime = {
   operation: OperationLock;
   disposed: boolean;
   terminalTransitioned: boolean;
+  /**
+   * The restart operation ID minted for this attempt's first confirmed restart
+   * and reused on every retry, so the server replays the same transaction
+   * instead of creating another replacement. Cleared only when the request
+   * arguments must change (a stale revision).
+   */
+  restartOperationId?: string;
   countdown?: CountdownController;
   terminal(
     time: TimeSnapshot,

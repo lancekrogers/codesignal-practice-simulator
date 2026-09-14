@@ -32,9 +32,14 @@ Candidate source and source history belong to the candidate; `COACHING.md` is
 candidate-owned non-executable text; `session.json` and `events.jsonl` are
 simulator-owned authoritative state; `STATUS.md` is a generated view.
 
-The browser start confirmation begins the timer immediately; it has no pause,
-extension, or reset control. Once expired or submitted, the browser is
-read-only. In particular, **Submit** is disabled for an expired browser
+The browser start confirmation begins the timer immediately; it has no pause
+or extension control. **End attempt** and **Restart** are the candidate's
+explicit decisions (each behind a confirmation): ending records the attempt as
+`abandoned` without a score, restarting ends it and opens a fresh attempt whose
+timer starts over; saved work in the old attempt is never removed. An agent
+must not end or restart an attempt on the candidate's behalf, and must not use
+`abandon`/`restart` to work around a live selection. Once expired, submitted
+or ended, the browser is read-only. In particular, **Submit** is disabled for an expired browser
 attempt. If the candidate chooses to finalize that expired attempt, the CLI
 `submit --workspace-root "$workspace"` command is the explicit path; it stores
 one result, and later browser refreshes or reconnects show that stored final

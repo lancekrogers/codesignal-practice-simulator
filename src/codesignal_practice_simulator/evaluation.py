@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .errors import CandidateFailureError
 from .lifecycle import LifecycleService, SubmissionResult
-from .models import SessionState
+from .models import SessionRecord
 
 
 class EvaluationService:
@@ -13,7 +13,7 @@ class EvaluationService:
     def __init__(self, lifecycle: LifecycleService) -> None:
         self.lifecycle = lifecycle
 
-    def test(self, attempt_id: str | None = None) -> SessionState:
+    def test(self, attempt_id: str | None = None) -> SessionRecord:
         """Score one active attempt and return exit-five semantics for non-passes."""
         state = self.lifecycle.test(attempt_id)
         assert state.score is not None

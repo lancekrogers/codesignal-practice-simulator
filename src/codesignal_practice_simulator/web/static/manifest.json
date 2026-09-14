@@ -2,7 +2,7 @@
   "ASSET_PROVENANCE.txt": {
     "media_type": "text/plain; charset=utf-8",
     "cache_control": "no-store",
-    "sha256": "e4d45ada3b1224841227473aa25ef5a745cf314f5259dabd0be1bb5e96dbf0a5",
+    "sha256": "9219640213fdc6cfe233c1acc67b09194ee55d625ddbb8ce6dfcd72b0b807830",
     "size": 2257
   },
   "NOTICE.txt": {
@@ -11,23 +11,23 @@
     "sha256": "278342a849a42551f42a95478436883e326cf1fbc0133416307ec72d696845e4",
     "size": 95631
   },
+  "app-C5H6IYXY.js": {
+    "media_type": "text/javascript; charset=utf-8",
+    "cache_control": "public, max-age=31536000, immutable",
+    "sha256": "02f95dec24bf4118de757fab7d1677191ade2d1c4f5abc26d2dc7e4eada16c85",
+    "size": 3056515
+  },
   "app-QRCXFRU5.css": {
     "media_type": "text/css; charset=utf-8",
     "cache_control": "public, max-age=31536000, immutable",
     "sha256": "7aecbcf73bdddde7bffd2c76bb4c4b9fb6cb0d72912b97e83d50511b402f449c",
     "size": 105945
   },
-  "app-TXNP7GKD.js": {
-    "media_type": "text/javascript; charset=utf-8",
-    "cache_control": "public, max-age=31536000, immutable",
-    "sha256": "5ad4033aeaaf7b846acbb3925a8ba430f4f5e3b541c5daa7cbc2c3d2b6a818d3",
-    "size": 3006317
-  },
   "app.js": {
     "media_type": "text/javascript; charset=utf-8",
     "cache_control": "no-store",
-    "sha256": "5ad4033aeaaf7b846acbb3925a8ba430f4f5e3b541c5daa7cbc2c3d2b6a818d3",
-    "size": 3006317
+    "sha256": "02f95dec24bf4118de757fab7d1677191ade2d1c4f5abc26d2dc7e4eada16c85",
+    "size": 3056515
   },
   "codicon-KP4OV2OO.ttf": {
     "media_type": "font/ttf",
@@ -50,7 +50,7 @@
   "index.html": {
     "media_type": "text/html; charset=utf-8",
     "cache_control": "no-store",
-    "sha256": "14c1f4b92b321fb5cc27fc247ae55ce1a04bf6111018581b6349602d50b2b85a",
+    "sha256": "353b8625e0f7d8639c57e72c9b7d45c39b4cccf7d28902e4a86fa795377fdb01",
     "size": 473
   },
   "language.worker-F67IIHMR.js": {
@@ -59,17 +59,17 @@
     "sha256": "46b4f6f3f972ba9eef00c2c56ba3150cd16ee7a4c6776227cafa97f0e6761c49",
     "size": 37
   },
-  "styles-GEUW5NOV.css": {
+  "styles-AJHKO62J.css": {
     "media_type": "text/css; charset=utf-8",
     "cache_control": "public, max-age=31536000, immutable",
-    "sha256": "ae167c4c836fb5bac6b3dbfab96a85215b4037803286322091ada3ff59ed89c8",
-    "size": 8435
+    "sha256": "ffe9d1cac5414b18f55b620ad90d7598a6bf7c20c7c33e233a6f2ab192d5d25e",
+    "size": 10887
   },
   "styles.css": {
     "media_type": "text/css; charset=utf-8",
     "cache_control": "no-store",
-    "sha256": "ae167c4c836fb5bac6b3dbfab96a85215b4037803286322091ada3ff59ed89c8",
-    "size": 8435
+    "sha256": "ffe9d1cac5414b18f55b620ad90d7598a6bf7c20c7c33e233a6f2ab192d5d25e",
+    "size": 10887
   },
   "manifest.json": {
     "media_type": "application/json; charset=utf-8",

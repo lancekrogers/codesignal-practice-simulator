@@ -23,7 +23,7 @@ export function disabledButton(
 ): HTMLButtonElement {
   const result = button(label, className);
   result.disabled = true;
-  if (["Run Tests", "Reset", "Submit"].includes(label)) {
+  if (["Run Tests", "Reset source", "End attempt", "Restart", "Submit"].includes(label)) {
     result.dataset.mutation = "true";
   }
   return result;
@@ -56,13 +56,14 @@ function pad(value: number): string {
 }
 
 export function terminalEditorMessage(status: AttemptStatus): string {
-  return status === "submitted"
-    ? "This attempt is submitted. Editing is unavailable."
-    : "This attempt is expired. Editing is unavailable.";
+  if (status === "submitted") return "This attempt is submitted. Editing is unavailable.";
+  if (status === "abandoned") return "This attempt was ended. Editing is unavailable.";
+  return "This attempt is expired. Editing is unavailable.";
 }
 
 export function lifecycleLabel(status: AttemptStatus): string {
   if (status === "active") return "Active";
+  if (status === "abandoned") return "Ended";
   return status === "expired" ? "Expired" : "Submitted";
 }
 
@@ -80,6 +81,9 @@ export function terminalAnnouncement(
     : "Source remains available.";
   if (status === "expired") {
     return `Attempt expired. ${sourceMessage} Results remain available in read-only mode.`;
+  }
+  if (status === "abandoned") {
+    return `Attempt ended without submission. ${sourceMessage} Saved work remains available in read-only mode.`;
   }
   if (score) {
     return `Final result announced. Passed levels: ${score.passed_levels} of ${score.levels.length}. ${sourceMessage} Results are final and read-only.`;

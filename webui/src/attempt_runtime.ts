@@ -28,6 +28,7 @@ import { errorState } from "./state";
 import { createOperationLock } from "./attempt_operation_lock";
 
 let currentAttemptCleanup: (() => void) | null = null;
+let currentRuntime: AttemptRuntime | null = null;
 let attemptGeneration = 0;
 
 export function showAttempt(
@@ -39,6 +40,7 @@ export function showAttempt(
   disposeAttempt();
   const runtime = createAttemptRuntime(root, manifest, bootstrap, payload);
   currentAttemptCleanup = runtime.cleanup;
+  currentRuntime = runtime;
   runtime.start();
 }
 
@@ -46,6 +48,42 @@ export function disposeAttempt(): void {
   attemptGeneration += 1;
   currentAttemptCleanup?.();
   currentAttemptCleanup = null;
+  currentRuntime = null;
+}
+
+export type LeaveSettlement =
+  | { kind: "none" }
+  | { kind: "clear"; attemptId: string }
+  | { kind: "unsaved"; attemptId: string };
+
+/**
+ * Before a navigation that did not come from the attempt's own Leave dialog
+ * (browser back/forward, a typed address), give the live attempt the chance to
+ * finish saving. A pending or in-flight save is flushed; text that still cannot
+ * be saved is reported as `unsaved` so the caller can keep the attempt open
+ * instead of discarding it silently.
+ */
+export async function settleAttemptBeforeLeaving(): Promise<LeaveSettlement> {
+  const runtime = currentRuntime;
+  if (!runtime || runtime.disposed || runtime.state.session.status !== "active") {
+    return { kind: "none" };
+  }
+  const attemptId = runtime.state.session.attempt_id;
+  const source = runtime.source;
+  if (!source) return { kind: "clear", attemptId };
+  let status = source.state.status;
+  if (status === "dirty" || status === "saving") {
+    status = (await source.flush()).status;
+  }
+  if (runtime.disposed || currentRuntime !== runtime) return { kind: "none" };
+  return status === "clean" ? { kind: "clear", attemptId } : { kind: "unsaved", attemptId };
+}
+
+export function announceInAttempt(message: string): void {
+  const runtime = currentRuntime;
+  if (!runtime || runtime.disposed) return;
+  runtime.elements.announce(message);
+  runtime.elements.status.textContent = message;
 }
 
 export async function showTerminalAttempt(

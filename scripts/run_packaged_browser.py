@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import signal
 import shutil
 import subprocess
@@ -22,7 +23,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from check_assets import check_static_root  # noqa: E402
 from packaging_support import (  # noqa: E402
-    discover_packaging_interpreter,
+    BUILD_MODE_FRONTEND,
+    BUILD_MODE_HOOKS,
+    discover_builder,
     packaging_prerequisite_error,
 )
 
@@ -32,6 +35,26 @@ PACKAGE_NAME = "codesignal_practice_simulator"
 STATIC = PROJECT / "src" / "codesignal_practice_simulator" / "web" / "static"
 STATIC_PREFIX = f"{PACKAGE_NAME}/web/static/"
 DECLARED_RUNTIME_RESOURCES = frozenset({"resources/fixture-manifest.json"})
+# Bundled original exercises live at resources/assessments/<id>/ and may contain
+# exactly the candidate-facing files plus their content manifest. Anything else
+# under that prefix (a solution, a note, a nested directory) fails the archive.
+# Development oracle filenames, wherever they might appear in an archive.
+FORBIDDEN_ARCHIVE_SUFFIXES = ("_reference.py", "_solution.py", "_oracle.py")
+PACKAGED_ASSESSMENTS_PREFIX = "resources/assessments/"
+# Same shape the registry enforces on input directory segments: no dots, no
+# uppercase, so ".." or "Records_Demo" never match.
+PACKAGED_ASSESSMENT_DIRECTORY = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
+PACKAGED_ASSESSMENT_MEMBERS = frozenset(
+    {
+        "level1.md",
+        "level2.md",
+        "level3.md",
+        "level4.md",
+        "simulation.py",
+        "test_simulation.py",
+        "content-manifest.json",
+    }
+)
 FORBIDDEN_ARCHIVE_PARTS = frozenset(
     {
         ".cache",
@@ -47,6 +70,7 @@ FORBIDDEN_ARCHIVE_PARTS = frozenset(
         "node_modules",
         "npm-cache",
         "npm_cache",
+        "oracles",
         "playwright-report",
         "playwright-reports",
         "playwright-cache",
@@ -138,6 +162,8 @@ def _assert_archive_paths(members: list[str]) -> None:
         parts = {part.lower() for part in member.replace("\\", "/").split("/")}
         if parts & FORBIDDEN_ARCHIVE_PARTS:
             raise RuntimeError(f"archive contains forbidden path: {member}")
+        if member.lower().endswith(FORBIDDEN_ARCHIVE_SUFFIXES):
+            raise RuntimeError(f"archive contains a development oracle: {member}")
 
 
 def _static_members(members: list[str], prefix: str) -> set[str]:
@@ -158,6 +184,20 @@ def _assert_runtime_package_resources(
         if prefix not in member:
             continue
         relative = member.split(prefix, 1)[1]
+        if relative.startswith(PACKAGED_ASSESSMENTS_PREFIX):
+            # Checked before the generic .py rule so a bundled solution.py can
+            # never ride along as ordinary package code.
+            parts = relative[len(PACKAGED_ASSESSMENTS_PREFIX):].split("/")
+            if (
+                len(parts) != 2
+                or PACKAGED_ASSESSMENT_DIRECTORY.fullmatch(parts[0]) is None
+                or parts[1] not in PACKAGED_ASSESSMENT_MEMBERS
+            ):
+                raise RuntimeError(
+                    "archive contains unexpected packaged assessment member: "
+                    f"{relative}"
+                )
+            continue
         if (
             relative.endswith(".py")
             or static_prefix in member
@@ -347,10 +387,11 @@ def _readline(process: subprocess.Popen[str]) -> str:
 
 
 def main() -> int:
-    python = discover_packaging_interpreter(require_build=True)
-    if python is None:
+    builder = discover_builder()
+    if builder is None:
         print(packaging_prerequisite_error(require_build=True), file=sys.stderr)
         return 2
+    python, build_mode = builder
     npm = shutil.which("npm")
     if npm is None:
         print("npm is required for the packaged browser check", file=sys.stderr)
@@ -361,6 +402,7 @@ def main() -> int:
     summary: dict[str, object] = {
         "asset_count": len(expected_hashes),
         "builder": str(python),
+        "build_mode": build_mode,
     }
     with tempfile.TemporaryDirectory(prefix="codesignal-browser-wheel-") as directory:
         root = Path(directory)
@@ -370,6 +412,7 @@ def main() -> int:
                 Path(npm),
                 root,
                 expected_hashes,
+                build_mode=build_mode,
             )
         )
     if root.exists():
@@ -384,8 +427,10 @@ def verify_installed_package(
     npm: Path,
     root: Path,
     expected_hashes: dict[str, str],
+    *,
+    build_mode: str = BUILD_MODE_FRONTEND,
 ) -> dict[str, object]:
-    wheel, source = build_archives(builder, root)
+    wheel, source = build_archives(builder, root, build_mode=build_mode)
     summary: dict[str, object] = {
         "archives": inspect_archives(wheel, source, expected_hashes)
     }
@@ -430,22 +475,51 @@ def verify_installed_package(
     return summary
 
 
-def build_archives(builder: Path, root: Path) -> tuple[Path, Path]:
+def build_archives(
+    builder: Path,
+    root: Path,
+    *,
+    build_mode: str = BUILD_MODE_FRONTEND,
+) -> tuple[Path, Path]:
     dist = root / "dist"
-    run(
-        [
-            str(builder),
-            "-m",
-            "build",
-            "--sdist",
-            "--wheel",
-            "--no-isolation",
-            "--outdir",
-            str(dist),
-            str(PROJECT),
-        ],
-        cwd=root,
-    )
+    if build_mode == BUILD_MODE_FRONTEND:
+        run(
+            [
+                str(builder),
+                "-m",
+                "build",
+                "--sdist",
+                "--wheel",
+                "--no-isolation",
+                "--outdir",
+                str(dist),
+                str(PROJECT),
+            ],
+            cwd=root,
+        )
+    elif build_mode == BUILD_MODE_HOOKS:
+        # The same setuptools backend `python -m build --no-isolation` would
+        # drive, called in-process: an sdist and a wheel from the checkout, with
+        # no network and no frontend distribution required.
+        dist.mkdir(parents=True, exist_ok=True)
+        run(
+            [
+                str(builder),
+                "-W",
+                "ignore",
+                "-c",
+                (
+                    "import sys; from setuptools import build_meta; "
+                    "out = sys.argv[1]; "
+                    "print(build_meta.build_sdist(out)); "
+                    "print(build_meta.build_wheel(out))"
+                ),
+                str(dist),
+            ],
+            cwd=PROJECT,
+        )
+    else:
+        raise RuntimeError(f"unknown build mode: {build_mode}")
     return next(dist.glob("*.whl")), next(dist.glob("*.tar.gz"))
 
 

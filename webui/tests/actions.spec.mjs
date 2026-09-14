@@ -416,8 +416,11 @@ test("submitted reconnect reloads authoritative source after a real process rest
   await harness.restart();
   requestPolicy.refreshOrigin();
   await page.goto(`${harness.origin}/#token=${harness.token}`);
+  // The library lists the submitted session once the bootstrap resolves; the
+  // explicit action opens the read-only view.
   const viewFinal = page.getByRole("button", { name: "View final session" });
-  if (await viewFinal.isVisible()) await viewFinal.click();
+  await expect(viewFinal).toBeVisible();
+  await viewFinal.click();
   await expect(page.getByText("Submitted", { exact: true })).toBeVisible();
   await expect(page.getByTestId("output-drawer")).toContainText(
     "Final result · Passed levels:",

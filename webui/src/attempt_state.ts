@@ -7,7 +7,7 @@ import {
 } from "./view_state";
 
 export type Mode = "full" | "drill";
-export type AttemptStatus = "active" | "expired" | "submitted";
+export type AttemptStatus = "active" | "expired" | "submitted" | "abandoned";
 export type ConnectionState = "connected" | "reconnecting";
 export type ActionState = "idle" | "testing" | "submitting";
 
@@ -58,6 +58,19 @@ export type BootstrapTime = {
   remaining_seconds: number;
 };
 
+export type CatalogEntry = {
+  assessment_id: string;
+  display_name: string;
+  description: string;
+  levels: Array<{ level: number; label: string }>;
+  profiles: Profile[];
+  provider_kind: string;
+  content_version: string | null;
+  available: boolean;
+  setup: string | null;
+  setup_message: string | null;
+};
+
 export type Bootstrap = {
   assessment: {
     assessment_id: string;
@@ -67,6 +80,7 @@ export type Bootstrap = {
   levels: Array<{ level: number; label: string }>;
   profiles: Profile[];
   rules: string[];
+  catalog: CatalogEntry[];
   session: Session | null;
   time: BootstrapTime | null;
 };

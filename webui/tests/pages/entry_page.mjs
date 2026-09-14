@@ -21,6 +21,8 @@ export class EntryPage {
 
   async expectLoaded() {
     await expect(this.main()).toBeVisible();
+    await expect(this.page.getByRole("heading", { name: "Practice library", level: 1 }))
+      .toBeVisible();
     await expect(this.page.getByRole("heading", { name: "File Storage" })).toBeVisible();
     await expect(this.page.getByRole("status")).toContainText("No attempt has started.");
   }

@@ -434,7 +434,7 @@ class EndToEndTests(unittest.TestCase):
         payloads = {upstream_path: data for upstream_path, _cache_path, data in records}
         manifest: dict[str, object] = {
             "fixture_cache_root": ".cache/codesignal-fixtures/synthetic",
-            "upstream": {"repository": "offline/example", "commit": "synthetic"},
+            "upstream": {"repository": "offline/example", "commit": "5e7e7e7"},
             "fetches": [
                 {
                     "upstream_path": upstream_path,
@@ -688,6 +688,149 @@ def evaluate(group):
                 )
                 self._assert_workspace_isolation(workspace, cache_before)
 
+    def test_original_exercise_console_lifecycle_restart_history_review_and_end(self) -> None:
+        """R1–R7 through the console: a packaged original needs no fetch cache.
+
+        start → test → restart (same operation replayed) → history → review of
+        the ended attempt → abandon the replacement → filtered history. The old
+        attempt's bytes never change after the restart, and review never
+        reselects or rewrites anything.
+        """
+        workspace = self._workspace("console-original-lifecycle")
+        catalog = self._run("console", workspace, "catalog")
+        assert isinstance(catalog, subprocess.CompletedProcess)
+        entries = {
+            entry["assessment_id"]: entry  # type: ignore[index]
+            for entry in self._document(catalog, 0)["result"]["assessments"]  # type: ignore[index]
+        }
+        self.assertTrue(entries["account_ledger"]["available"])  # type: ignore[index]
+        self.assertEqual(entries["account_ledger"]["provider_kind"], "packaged-original")  # type: ignore[index]
+        self.assertFalse(entries["file_storage"]["available"])  # type: ignore[index]
+        self.assertEqual(entries["file_storage"]["setup"], "fetch_required")  # type: ignore[index]
+
+        old_id, old = self._start(
+            "console", workspace,
+            "--assessment", "account_ledger", "--mode", "drill", "--drill-duration-seconds", "120",
+        )
+        self.assertFalse((workspace / ".cache").exists())
+        # The packaged starter returns nothing, so every group is non-passing:
+        # `test` reports that with exit 5 (candidate_failure) and still records
+        # the practice score, which `status` then shows.
+        tested = self._run("console", workspace, "test")
+        assert isinstance(tested, subprocess.CompletedProcess)
+        self.assertEqual(self._document(tested, 5)["error"]["code"], "candidate_failure")  # type: ignore[index]
+        status = self._run("console", workspace, "status")
+        assert isinstance(status, subprocess.CompletedProcess)
+        tested_session = self._document(status, 0)["result"]["session"]  # type: ignore[index]
+        self.assertEqual(tested_session["assessment"]["assessment_id"], "account_ledger")  # type: ignore[index]
+        self.assertEqual(tested_session["assessment"]["content_version"], "ledger-1")  # type: ignore[index]
+        self.assertEqual(tested_session["score"]["passed_levels"], 0)  # type: ignore[index]
+        revision = tested_session["revision"]  # type: ignore[index]
+        self.assertEqual(revision, 1)
+
+        old_before = _tree_snapshot(old)
+        operation = "6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f"
+        restarted = self._run(
+            "console", workspace, "restart",
+            "--expected-revision", str(revision), "--operation-id", operation,
+        )
+        assert isinstance(restarted, subprocess.CompletedProcess)
+        restart_result = self._document(restarted, 0)["result"]
+        replacement_id = restart_result["replacement_attempt_id"]  # type: ignore[index]
+        self.assertNotEqual(replacement_id, old_id)
+        self.assertFalse(restart_result["replayed"])  # type: ignore[index]
+        self.assertEqual(restart_result["abandoned_session"]["status"], "abandoned")  # type: ignore[index]
+        self.assertEqual(restart_result["session"]["profile"]["duration_seconds"], 120)  # type: ignore[index]
+        replayed = self._run(
+            "console", workspace, "restart",
+            "--attempt", old_id, "--expected-revision", str(revision), "--operation-id", operation,
+        )
+        assert isinstance(replayed, subprocess.CompletedProcess)
+        replay_result = self._document(replayed, 0)["result"]
+        self.assertTrue(replay_result["replayed"])  # type: ignore[index]
+        self.assertEqual(replay_result["replacement_attempt_id"], replacement_id)  # type: ignore[index]
+        old_after = _tree_snapshot(old)
+        assert old_before is not None and old_after is not None
+        # The candidate-facing files are byte-identical; only the lifecycle
+        # record, its event log and the derived STATUS.md changed.
+        candidate_files = {"level1.md", "level2.md", "level3.md", "level4.md", "simulation.py", "test_simulation.py"}
+        self.assertEqual(
+            {name: value for name, value in old_after.items() if Path(name).name in candidate_files},
+            {name: value for name, value in old_before.items() if Path(name).name in candidate_files},
+        )
+        changed = {
+            Path(name).name
+            for name in old_after
+            if old_after[name] != old_before.get(name)
+        }
+        self.assertEqual(changed, {"session.json", "events.jsonl", "STATUS.md"})
+        self.assertIn("abandoned", (old / "STATUS.md").read_text(encoding="utf-8"))
+        self.assertEqual(_event_names(old), ["started", "tested", "abandoned"])
+        self.assertEqual(
+            {path.name for path in (workspace / "attempts").iterdir() if not path.name.startswith(".")},
+            {old_id, replacement_id, "active.json"},
+        )
+
+        history = self._run("console", workspace, "history")
+        assert isinstance(history, subprocess.CompletedProcess)
+        page = self._document(history, 0)["result"]
+        rows = {item["attempt_id"]: item for item in page["items"]}  # type: ignore[index]
+        self.assertEqual(set(rows), {old_id, replacement_id})
+        self.assertEqual(rows[old_id]["status"], "abandoned")  # type: ignore[index]
+        self.assertEqual(rows[old_id]["practice_score"]["passed_levels"], 0)  # type: ignore[index]
+        self.assertFalse(rows[old_id]["review_available"])  # type: ignore[index]
+        self.assertEqual(rows[replacement_id]["status"], "active")  # type: ignore[index]
+        self.assertEqual(page["warnings"], [])  # type: ignore[index]
+
+        review = self._run("console", workspace, "review", "--attempt", old_id)
+        assert isinstance(review, subprocess.CompletedProcess)
+        reviewed = self._document(review, 0)["result"]
+        self.assertEqual(reviewed["status"], "abandoned")  # type: ignore[index]
+        self.assertEqual(reviewed["source_binding"], "not_applicable")  # type: ignore[index]
+        self.assertIsNone(reviewed["source"])  # type: ignore[index]
+        self.assertIsNone(reviewed["score"])  # type: ignore[index]
+        self.assertEqual(reviewed["practice_score"]["passed_levels"], 0)  # type: ignore[index]
+        self.assertEqual(reviewed["assessment"]["content_identity"], "pinned")  # type: ignore[index]
+        self.assertEqual(_tree_snapshot(old), old_after)
+        pointer = json.loads((workspace / "attempts" / "active.json").read_text(encoding="utf-8"))
+        self.assertEqual(pointer["attempt_id"], replacement_id)
+
+        stale = self._run("console", workspace, "abandon", "--expected-revision", "7")
+        assert isinstance(stale, subprocess.CompletedProcess)
+        self.assertEqual(self._document(stale, 4)["error"]["code"], "stale_revision")  # type: ignore[index]
+        ended = self._run("console", workspace, "abandon", "--expected-revision", "0")
+        assert isinstance(ended, subprocess.CompletedProcess)
+        ended_result = self._document(ended, 0)["result"]
+        self.assertTrue(ended_result["newly_abandoned"])  # type: ignore[index]
+        self.assertEqual(ended_result["session"]["status"], "abandoned")  # type: ignore[index]
+        again = self._run("console", workspace, "submit")
+        assert isinstance(again, subprocess.CompletedProcess)
+        self.assertEqual(self._document(again, 4)["error"]["code"], "illegal_lifecycle")  # type: ignore[index]
+
+        filtered = self._run("console", workspace, "history", "--status", "abandoned", "--limit", "1")
+        assert isinstance(filtered, subprocess.CompletedProcess)
+        first_page = self._document(filtered, 0)["result"]
+        self.assertEqual(len(first_page["items"]), 1)  # type: ignore[index]
+        self.assertIsNotNone(first_page["next_cursor"])  # type: ignore[index]
+        second = self._run(
+            "console", workspace, "history", "--status", "abandoned", "--limit", "1",
+            "--cursor", first_page["next_cursor"],  # type: ignore[index]
+        )
+        assert isinstance(second, subprocess.CompletedProcess)
+        second_page = self._document(second, 0)["result"]
+        self.assertEqual(len(second_page["items"]), 1)  # type: ignore[index]
+        self.assertIsNone(second_page["next_cursor"])  # type: ignore[index]
+        self.assertEqual(
+            {first_page["items"][0]["attempt_id"], second_page["items"][0]["attempt_id"]},  # type: ignore[index]
+            {old_id, replacement_id},
+        )
+        mismatched = self._run(
+            "console", workspace, "history", "--status", "active",
+            "--cursor", first_page["next_cursor"],  # type: ignore[index]
+        )
+        assert isinstance(mismatched, subprocess.CompletedProcess)
+        self.assertEqual(self._document(mismatched, 2)["error"]["code"], "invalid_input")  # type: ignore[index]
+
     def test_scorer_uses_the_exact_isolated_argv_and_rejects_external_imports(self) -> None:
         workspace = self._workspace("scorer-argv")
         self._fetch("console", workspace)
@@ -747,8 +890,16 @@ def evaluate(group):
 
         workspace = self._workspace("selection-and-tail")
         self._fetch("console", workspace)
-        first_id, first = self._start("console", workspace)
+        # A plain start never displaces a live selected attempt (D001): the
+        # neighbor is started first and ended explicitly, then the attempt under
+        # test starts. The ended neighbor must stay byte-identical throughout.
         _second_id, second = self._start("console", workspace)
+        ended = self._run("console", workspace, "abandon", "--expected-revision", "0")
+        assert isinstance(ended, subprocess.CompletedProcess)
+        self.assertEqual(
+            self._document(ended, 0)["result"]["session"]["status"], "abandoned"  # type: ignore[index]
+        )
+        first_id, first = self._start("console", workspace)
         second_before = _bytes_under(second, ignored_names={".session.lock"})
         pointer = workspace / "attempts" / "active.json"
         pointer.write_text("{bad", encoding="utf-8")

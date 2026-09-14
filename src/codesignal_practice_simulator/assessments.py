@@ -2,15 +2,38 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from .errors import InvalidInputError
-from .models import DRILL_PROFILE, FULL_PROFILE, AssessmentMetadata
+from .models import DRILL_PROFILE, FULL_PROFILE, AssessmentMetadata, PinnedAssessment
+
+
+CONTENT_IDENTITY_SCHEMA_VERSION = "assessment-content/v1"
+# The isolated runner loads test_simulation.TestSimulateCodingFramework.test_group_N
+# for N in 1..4 (scoring.py bootstrap). Content pinned to another contract is not
+# scorable by this release.
+RUNNER_CONTRACT = "unittest-groups-v1"
+# Input provider kinds (D003). The provider that owns a kind validates the
+# source before staging and computes the identity new attempts pin.
+PINNED_FETCHED = "pinned-fetched"
+PACKAGED_ORIGINAL = "packaged-original"
+PROVIDER_KINDS = frozenset((PINNED_FETCHED, PACKAGED_ORIGINAL))
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_DIRECTORY_SEGMENT = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 
 
 @dataclass(frozen=True, slots=True)
 class AssessmentDefinition:
-    """The copied inputs and supported runtime contract for one assessment."""
+    """The copied inputs and supported runtime contract for one assessment.
+
+    ``cache_directory`` is the definition's input directory relative to its
+    provider's root: the fetched fixture cache for ``pinned-fetched`` content,
+    the installed resources package for ``packaged-original`` content.
+    """
 
     metadata: AssessmentMetadata
     cache_directory: str
@@ -19,10 +42,24 @@ class AssessmentDefinition:
     test_filename: str
     level_groups: tuple[int, ...]
     profile_ids: frozenset[str]
+    runner_contract: str = RUNNER_CONTRACT
+    provider_kind: str = PINNED_FETCHED
+    description: str = ""
 
     def __post_init__(self) -> None:
-        if not self.cache_directory or self.cache_directory.startswith("/"):
+        if (
+            not isinstance(self.cache_directory, str)
+            or not self.cache_directory
+            or any(
+                not _DIRECTORY_SEGMENT.fullmatch(segment)
+                for segment in self.cache_directory.split("/")
+            )
+        ):
             raise InvalidInputError("assessment cache directory is invalid")
+        if self.provider_kind not in PROVIDER_KINDS:
+            raise InvalidInputError("assessment provider kind is unsupported")
+        if not isinstance(self.description, str):
+            raise InvalidInputError("assessment description is invalid")
         if self.level_groups != (1, 2, 3, 4):
             raise InvalidInputError("assessment must define groups 1 through 4")
         if not self.prompt_filenames or any(
@@ -36,6 +73,8 @@ class AssessmentDefinition:
             raise InvalidInputError("assessment test filename is invalid")
         if self.profile_ids != frozenset((FULL_PROFILE, DRILL_PROFILE)):
             raise InvalidInputError("assessment profiles are invalid")
+        if self.runner_contract != RUNNER_CONTRACT:
+            raise InvalidInputError("assessment runner contract is unsupported")
 
     @property
     def copied_filenames(self) -> tuple[str, ...]:
@@ -53,6 +92,48 @@ class AssessmentDefinition:
         return profile_id in self.profile_ids
 
 
+def content_identity(
+    definition: AssessmentDefinition,
+    *,
+    content_version: str,
+    file_hashes: Mapping[str, str],
+) -> PinnedAssessment:
+    """Pin one definition to declared hashes of its copied candidate-facing files.
+
+    The digest covers the assessment ID, content version, runner contract, and
+    each copied file's declared SHA-256. Callers supply hashes that were (or will
+    be) verified against actual bytes; this function never reads files itself.
+    """
+    if not isinstance(file_hashes, Mapping) or set(file_hashes) != set(
+        definition.copied_filenames
+    ):
+        raise InvalidInputError("content identity requires every copied file hash")
+    if any(
+        not isinstance(digest, str) or not _SHA256.fullmatch(digest)
+        for digest in file_hashes.values()
+    ):
+        raise InvalidInputError("content identity file hashes are invalid")
+    document = {
+        "schema_version": CONTENT_IDENTITY_SCHEMA_VERSION,
+        "assessment_id": definition.metadata.assessment_id,
+        "content_version": content_version,
+        "runner_contract": definition.runner_contract,
+        "files": [
+            {"path": name, "sha256": file_hashes[name]} for name in sorted(file_hashes)
+        ],
+    }
+    encoded = json.dumps(
+        document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return PinnedAssessment(
+        assessment_id=definition.metadata.assessment_id,
+        display_name=definition.metadata.display_name,
+        content_version=content_version,
+        content_digest=hashlib.sha256(encoded).hexdigest(),
+        level_count=definition.metadata.level_count,
+    )
+
+
 FILE_STORAGE = AssessmentDefinition(
     metadata=AssessmentMetadata("file_storage", "File Storage"),
     cache_directory="assessment/file_storage",
@@ -61,6 +142,42 @@ FILE_STORAGE = AssessmentDefinition(
     test_filename="test_simulation.py",
     level_groups=(1, 2, 3, 4),
     profile_ids=frozenset((FULL_PROFILE, DRILL_PROFILE)),
+    runner_contract=RUNNER_CONTRACT,
+    provider_kind=PINNED_FETCHED,
+    description=(
+        "Fetched File Storage practice assessment; requires the pinned fixture cache."
+    ),
+)
+
+
+def _original(assessment_id: str, display_name: str, description: str) -> AssessmentDefinition:
+    """A bundled original exercise following the shared content conventions."""
+    return AssessmentDefinition(
+        metadata=AssessmentMetadata(assessment_id, display_name),
+        cache_directory=f"assessments/{assessment_id}",
+        prompt_filenames=("level1.md", "level2.md", "level3.md", "level4.md"),
+        candidate_filename="simulation.py",
+        test_filename="test_simulation.py",
+        level_groups=(1, 2, 3, 4),
+        profile_ids=frozenset((FULL_PROFILE, DRILL_PROFILE)),
+        runner_contract=RUNNER_CONTRACT,
+        provider_kind=PACKAGED_ORIGINAL,
+        description=description,
+    )
+
+
+IN_MEMORY_RECORDS = _original(
+    "in_memory_records",
+    "In-Memory Records",
+    "Original offline exercise: a record store with fields, deterministic scans, "
+    "field expiry, and time-consistent snapshots.",
+)
+
+ACCOUNT_LEDGER = _original(
+    "account_ledger",
+    "Account Ledger",
+    "Original offline exercise: accounts and transfers, outgoing rankings, "
+    "scheduled transfers, and historical balances with account closure.",
 )
 
 
@@ -75,6 +192,13 @@ class AssessmentRegistry:
         }
         if len(self._definitions) != len(definitions):
             raise InvalidInputError("assessment registry contains duplicate IDs")
+        directories = {definition.cache_directory for definition in definitions}
+        if len(directories) != len(definitions):
+            raise InvalidInputError("assessment registry contains duplicate input directories")
+
+    def definitions(self) -> tuple[AssessmentDefinition, ...]:
+        """Return every installed definition in stable ID order."""
+        return tuple(self._definitions[key] for key in sorted(self._definitions))
 
     def require(self, assessment_id: str) -> AssessmentDefinition:
         if not isinstance(assessment_id, str):
@@ -85,12 +209,22 @@ class AssessmentRegistry:
             raise InvalidInputError(f"unknown assessment: {assessment_id}") from error
 
 
-DEFAULT_ASSESSMENT_REGISTRY = AssessmentRegistry((FILE_STORAGE,))
+DEFAULT_ASSESSMENT_REGISTRY = AssessmentRegistry(
+    (FILE_STORAGE, IN_MEMORY_RECORDS, ACCOUNT_LEDGER)
+)
 
 
 __all__ = [
+    "ACCOUNT_LEDGER",
     "AssessmentDefinition",
     "AssessmentRegistry",
+    "CONTENT_IDENTITY_SCHEMA_VERSION",
     "DEFAULT_ASSESSMENT_REGISTRY",
     "FILE_STORAGE",
+    "IN_MEMORY_RECORDS",
+    "PACKAGED_ORIGINAL",
+    "PINNED_FETCHED",
+    "PROVIDER_KINDS",
+    "RUNNER_CONTRACT",
+    "content_identity",
 ]
