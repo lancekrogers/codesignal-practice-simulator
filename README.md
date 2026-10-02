@@ -7,6 +7,16 @@ box (In-Memory Records, Account Ledger) plus the fetched File Storage
 assessment; every attempt is kept, browsable and reviewable, and can be
 ended or restarted without losing saved work.
 
+Built with [Festival](https://fest.build/). This repository is a working
+example of using Festival to plan, execute, and review an application with AI
+coding agents. The [build records](festivals/) and
+[festival replays](#how-this-was-built) show how the work moved from requirements
+to a verified release.
+
+[fest.build](https://fest.build/) ·
+[Festival documentation](https://docs.fest.build/getting-started/quickstart/) ·
+[Festival source on GitHub](https://github.com/Obedience-Corp/festival)
+
 ![Local practice IDE with the prompt, Monaco editor, timer, and test controls](docs/assets/practice-simulator.png)
 
 ## Quick start
@@ -42,15 +52,26 @@ it.
 
 ## How this was built
 
-The browser app was built through **Festival Methodology**, in festival
-**CB0001 — codesignal-browser-assessment-simulator**, completed September 10,
-2026. The work extended the existing Python CLI and scoring engine rather than
-creating a separate browser-only simulator.
+The simulator was built with [Festival](https://fest.build/), using
+**Festival Methodology** and the `fest` CLI. Festival keeps the goal, plan,
+decisions, progress, and review evidence in files and Git, so coding agents can
+continue the same work across sessions. Here, three festivals carried the
+project from a Python CLI to a browser IDE and a repeatable practice library.
 
-The festival organized the build into six phases: requirements intake,
-architecture and planning, the shared application backend, the assessment IDE,
-browser verification, and release review. Work moved through the `fest next`
-loop, with task completion, testing, review, and traceable commits. Cursor
+The completed festivals are included in [`festivals/`](festivals/), with their
+requirements, plans, tasks, review findings, verification evidence, and progress
+records:
+
+| Festival | What it built | Completed |
+| --- | --- | --- |
+| [CP0001 — Practice simulator](festivals/codesignal-practice-simulator-CP0001/FESTIVAL_OVERVIEW.md) | The Python CLI, timed attempts, scoring engine, and post-attempt study material | September 9, 2026 |
+| [CB0001 — Browser assessment simulator](festivals/codesignal-browser-assessment-simulator-CB0001/FESTIVAL_OVERVIEW.md) | The local browser IDE on top of the shared Python engine | September 10, 2026 |
+| [CP0002 — Practice library](festivals/codesignal-practice-library-CP0002/FESTIVAL_OVERVIEW.md) | Original exercises, fresh attempts, restart and abandonment, durable history, and read-only submission review | September 18, 2026 |
+
+Work moved through the `fest next` loop, with task completion, testing, review,
+and traceable commits. The browser festival organized its build into six
+phases: requirements intake, architecture and planning, the shared application
+backend, the assessment IDE, browser verification, and release review. Cursor
 agents handled implementation and independent architecture, security, and UI
 reviews; review findings fed back into fixes before release.
 
@@ -59,10 +80,21 @@ and Monaco editor. The browser and CLI share one server-authoritative attempt
 lifecycle. Verification covered unit and HTTP tests, real Playwright browser
 journeys, offline operation, and installed Python packages.
 
-![CB0001 build progress across six phases, finishing at 100% completion](docs/assets/codesignal-browser-assessment-simulator-CB0001.gif)
+**Browser IDE build — CB0001**
 
-That clip is the six-phase festival that built the browser app, not a practice
-run.
+![CB0001 build progress across six phases, finishing at 100% completion](festivals/codesignal-browser-assessment-simulator-CB0001/codesignal-browser-assessment-simulator-CB0001.gif)
+
+**Practice library build — CP0002**
+
+![CP0002 festival replay for the practice library build](festivals/codesignal-practice-library-CP0002/festival-replay.gif)
+
+These clips replay the festivals' recorded build progress. To inspect the
+workflow, start with a festival's `FESTIVAL_OVERVIEW.md`, follow its planning
+decisions and task records, then read the review and verification results.
+
+To use Festival for your own project, visit [fest.build](https://fest.build/),
+follow the [quickstart](https://docs.fest.build/getting-started/quickstart/), or
+explore and star the [Festival repository](https://github.com/Obedience-Corp/festival).
 
 ## Practice
 

@@ -1,0 +1,63 @@
+version: "1.0"
+metadata:
+  id: CP0001
+  uuid: 4a05f4c5-2e6b-408c-a2e1-7f759842f7ec
+  name: codesignal-practice-simulator
+  festival_type: standard
+  created_at: 2026-09-08T20:45:08.809313Z
+  initial_size_bytes: 33769
+  status_history:
+    - status: planning
+      timestamp: 2026-09-08T20:45:08.809313Z
+      path: festivals/planning/codesignal-practice-simulator-CP0001
+      notes: Festival created
+    - status: ready
+      timestamp: 2026-09-08T17:56:05.767522-06:00
+      path: festivals/ready/codesignal-practice-simulator-CP0001
+    - status: active
+      timestamp: 2026-09-08T17:56:12.806801-06:00
+      path: festivals/active/codesignal-practice-simulator-CP0001
+    - status: completed
+      timestamp: 2026-09-09T02:42:37.786204-06:00
+      path: festivals/.dungeon/completed/2026-09-09/codesignal-practice-simulator-CP0001
+type_config:
+  auto_phases:
+    - INGEST
+    - PLAN
+quality_gates:
+  enabled: true
+  auto_append: true
+  implementation:
+    - id: testing
+      template: gates/implementation/QUALITY_GATE_TESTING
+      name: Testing and Verification
+      enabled: true
+    - id: review
+      template: gates/implementation/QUALITY_GATE_REVIEW
+      name: Code Review
+      enabled: true
+    - id: iterate
+      template: gates/implementation/QUALITY_GATE_ITERATE
+      name: Review Results and Iterate
+      enabled: true
+    - id: fest-commit
+      template: gates/implementation/QUALITY_GATE_FEST_COMMIT
+      name: Fest Commit Changes
+      enabled: true
+excluded_patterns:
+  - '*_planning'
+  - '*_research'
+  - '*_requirements'
+templates:
+  task_default: tasks/SIMPLE
+  prefer_simple: true
+tracking:
+  enabled: true
+  checksum_file: .festival-checksums.json
+hooks:
+  enabled: true
+  definitions:
+    approval_judge:
+      command: ob judge --quiet --model qwen3:8b
+      fail: closed
+      timeout: "0"
