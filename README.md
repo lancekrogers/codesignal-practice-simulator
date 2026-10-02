@@ -7,6 +7,16 @@ box (In-Memory Records, Account Ledger) plus the fetched File Storage
 assessment; every attempt is kept, browsable and reviewable, and can be
 ended or restarted without losing saved work.
 
+Built with [Festival](https://fest.build/). This repository is a working
+example of using Festival to plan, execute, and review an application with AI
+coding agents. The [build records](festivals/) and
+[festival replays](#how-this-was-built) show how the work moved from requirements
+to a verified release.
+
+[fest.build](https://fest.build/) ·
+[Festival documentation](https://docs.fest.build/getting-started/quickstart/) ·
+[Festival source on GitHub](https://github.com/Obedience-Corp/festival)
+
 ![Local practice IDE with the prompt, Monaco editor, timer, and test controls](docs/assets/practice-simulator.png)
 
 ## Quick start
@@ -42,9 +52,15 @@ it.
 
 ## How this was built
 
-The simulator was built through **Festival Methodology**. The completed
-festivals are included in [`festivals/`](festivals/), with their requirements,
-plans, tasks, review findings, verification evidence, and progress records:
+The simulator was built with [Festival](https://fest.build/), using
+**Festival Methodology** and the `fest` CLI. Festival keeps the goal, plan,
+decisions, progress, and review evidence in files and Git, so coding agents can
+continue the same work across sessions. Here, three festivals carried the
+project from a Python CLI to a browser IDE and a repeatable practice library.
+
+The completed festivals are included in [`festivals/`](festivals/), with their
+requirements, plans, tasks, review findings, verification evidence, and progress
+records:
 
 | Festival | What it built | Completed |
 | --- | --- | --- |
@@ -72,7 +88,13 @@ journeys, offline operation, and installed Python packages.
 
 ![CP0002 festival replay for the practice library build](festivals/codesignal-practice-library-CP0002/festival-replay.gif)
 
-These clips show festival build progress, rather than practice attempts.
+These clips replay the festivals' recorded build progress. To inspect the
+workflow, start with a festival's `FESTIVAL_OVERVIEW.md`, follow its planning
+decisions and task records, then read the review and verification results.
+
+To use Festival for your own project, visit [fest.build](https://fest.build/),
+follow the [quickstart](https://docs.fest.build/getting-started/quickstart/), or
+explore and star the [Festival repository](https://github.com/Obedience-Corp/festival).
 
 ## Practice
 

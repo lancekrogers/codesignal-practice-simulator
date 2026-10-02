@@ -2,6 +2,11 @@
 
 These are sanitized snapshots of the three completed festivals used to build the
 simulator, copied from the JobSearch campaign's completed festival archive.
+They show [Festival](https://fest.build/) in use: requirements, decisions,
+execution, reviews, and verification kept with the work. See the
+[Festival source repository](https://github.com/Obedience-Corp/festival) and
+[quickstart](https://docs.fest.build/getting-started/quickstart/) to try the
+workflow on your own project.
 
 | Festival | Scope |
 | --- | --- |
