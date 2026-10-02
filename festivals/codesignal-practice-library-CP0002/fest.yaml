@@ -1,0 +1,63 @@
+version: "1.0"
+metadata:
+  id: CP0002
+  uuid: f9d6537c-8d00-4664-8bba-1f1e2b66db4d
+  name: codesignal-practice-library
+  goal: Make the local simulator a repeatable practice product with multiple selectable assessments, unlimited fresh attempts, safe restart and abandonment, durable attempt history, and read-only submission review while preserving existing work.
+  festival_type: standard
+  created_at: 2026-09-11T19:06:52.9298Z
+  initial_size_bytes: 34795
+  status_history:
+    - status: planning
+      timestamp: 2026-09-11T19:06:52.9298Z
+      path: festivals/planning/codesignal-practice-library-CP0002
+      notes: Festival created
+    - status: ready
+      timestamp: 2026-09-11T14:38:57.285318-06:00
+      path: festivals/ready/codesignal-practice-library-CP0002
+    - status: active
+      timestamp: 2026-09-11T14:39:08.763125-06:00
+      path: festivals/active/codesignal-practice-library-CP0002
+    - status: completed
+      timestamp: 2026-09-18T21:34:53.664937-06:00
+      path: festivals/.dungeon/completed/2026-09-18/codesignal-practice-library-CP0002
+type_config:
+  auto_phases:
+    - INGEST
+    - PLAN
+  pending_phases:
+    - name: IMPLEMENT
+      type: implementation
+    - name: POLISH
+      type: planning
+quality_gates:
+  enabled: true
+  auto_append: true
+  implementation:
+    - id: testing
+      template: gates/implementation/QUALITY_GATE_TESTING
+      name: Testing and Verification
+      enabled: true
+    - id: review
+      template: gates/implementation/QUALITY_GATE_REVIEW
+      name: Code Review
+      enabled: true
+    - id: iterate
+      template: gates/implementation/QUALITY_GATE_ITERATE
+      name: Review Results and Iterate
+      enabled: true
+    - id: fest-commit
+      template: gates/implementation/QUALITY_GATE_FEST_COMMIT
+      name: Fest Commit Changes
+      enabled: true
+excluded_patterns:
+  - '*_planning'
+  - '*_research'
+  - '*_requirements'
+  - '*_docs'
+templates:
+  task_default: tasks/SIMPLE
+  prefer_simple: true
+tracking:
+  enabled: true
+  checksum_file: .festival-checksums.json

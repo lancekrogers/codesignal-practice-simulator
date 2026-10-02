@@ -1,0 +1,417 @@
+{
+  "schema_version": 2,
+  "source_root": "/workspace/campaign/workflow/explore/codesignal-industry-coding-framework",
+  "upstream": {
+    "repository": "PaulLockett/CodeSignal_Practice_Industry_Coding_Framework",
+    "url": "https://github.com/PaulLockett/CodeSignal_Practice_Industry_Coding_Framework",
+    "commit": "6aab304",
+    "resolved_commit": "6aab30450fc380a76ee631bbddff66a18853a8cf"
+  },
+  "license": {
+    "licenseInfo": null,
+    "license_endpoint": "https://github.com/PaulLockett/CodeSignal_Practice_Industry_Coding_Framework/license?ref=6aab304",
+    "license_endpoint_status": 404
+  },
+  "license_decision": "FETCH_ONLY",
+  "fixture_cache_root": ".cache/codesignal-fixtures/6aab304",
+  "classification_definitions": {
+    "vendor": "byte-identical to a file in the exact upstream commit",
+    "user_authored": "proven non-verbatim asset approved for transfer",
+    "generated": "local environment or bytecode artifact",
+    "metadata": "source-local campaign or attempt metadata",
+    "out_of_scope": "source configuration deliberately replaced by target-owned configuration"
+  },
+  "summary": {
+    "regular_source_file_count": 1014,
+    "classification_counts": {
+      "generated": 978,
+      "metadata": 2,
+      "out_of_scope": 1,
+      "user_authored": 24,
+      "vendor": 9
+    },
+    "included_file_count": 24,
+    "vendor_file_count": 9,
+    "fetch_record_count": 7
+  },
+  "files": [
+    {
+      "source_path": "README.md",
+      "byte_length": 4483,
+      "sha256": "92685854d2cb1c14289da04ff2242ce2210c54fa7d2ad5f82f5eceb2f7057c97",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "docs/legacy/explore-README.md",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "assessment/file_storage/level1.md",
+      "byte_length": 1494,
+      "sha256": "0529eb7272952842e50957a3823a063ad1f46c426d236c4f4cdaaba90a247a5b",
+      "classification": "vendor",
+      "decision": "exclude",
+      "destination_path": null,
+      "cache_path": "assessment/file_storage/level1.md",
+      "reason": "byte-identical to upstream practice_assessments/file_storage/level1.md at commit 6aab304"
+    },
+    {
+      "source_path": "assessment/file_storage/level2.md",
+      "byte_length": 1712,
+      "sha256": "78a7c6f8fa4078b570af16399f158f30f91f5bc91e51c55171b4580c91f11695",
+      "classification": "vendor",
+      "decision": "exclude",
+      "destination_path": null,
+      "cache_path": "assessment/file_storage/level2.md",
+      "reason": "byte-identical to upstream practice_assessments/file_storage/level2.md at commit 6aab304"
+    },
+    {
+      "source_path": "assessment/file_storage/level3.md",
+      "byte_length": 2418,
+      "sha256": "45218db3791433e8f089ef34c1c550205951e971300ca3ecfa08411f2caae7f0",
+      "classification": "vendor",
+      "decision": "exclude",
+      "destination_path": null,
+      "cache_path": "assessment/file_storage/level3.md",
+      "reason": "byte-identical to upstream practice_assessments/file_storage/level3.md at commit 6aab304"
+    },
+    {
+      "source_path": "assessment/file_storage/level4.md",
+      "byte_length": 2627,
+      "sha256": "5e1f8bae5e82ea9a61cef9eaae512e9bc6df60a7473bd2ade1b20b1715c59736",
+      "classification": "vendor",
+      "decision": "exclude",
+      "destination_path": null,
+      "cache_path": "assessment/file_storage/level4.md",
+      "reason": "byte-identical to upstream practice_assessments/file_storage/level4.md at commit 6aab304"
+    },
+    {
+      "source_path": "assessment/file_storage/simulation.py",
+      "byte_length": 417,
+      "sha256": "3f402921360fc7fc3deb30392425873844268ade3515fb74e0c909f30c809fdc",
+      "classification": "vendor",
+      "decision": "exclude",
+      "destination_path": null,
+      "cache_path": "assessment/file_storage/simulation.py",
+      "reason": "byte-identical to upstream practice_assessments/file_storage/simulation.py at commit 6aab304"
+    },
+    {
+      "source_path": "assessment/file_storage/test_simulation.py",
+      "byte_length": 3495,
+      "sha256": "3bc1451a1c10b5a77624e66a2dc32ea57e14446919b07378941e56fcbfcfa51a",
+      "classification": "vendor",
+      "decision": "exclude",
+      "destination_path": null,
+      "cache_path": "assessment/file_storage/test_simulation.py",
+      "reason": "byte-identical to upstream practice_assessments/file_storage/test_simulation.py at commit 6aab304"
+    },
+    {
+      "source_path": "assessment/vendor-readme.md",
+      "byte_length": 12180,
+      "sha256": "b4c2fbb6810f5969b1cfaea9534369b7a1b1ba40fe759d9951804e727823eca5",
+      "classification": "vendor",
+      "decision": "exclude",
+      "destination_path": null,
+      "cache_path": "vendor-readme.md",
+      "reason": "byte-identical to upstream Readme.md at commit 6aab304"
+    },
+    {
+      "source_path": "justfile",
+      "byte_length": 769,
+      "sha256": "71aecd7d7ca40eea6fb0cd32b8b3028b6f2d4330e6344a3a27d2d495139a5c8b",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "justfile",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "justfiles/practice.just",
+      "byte_length": 2314,
+      "sha256": "3f7ed51ec3081a88e8ecdbda2c11feb8d47223be1f834725b759d1c933a5401d",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "justfiles/practice.just",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "justfiles/verify.just",
+      "byte_length": 1212,
+      "sha256": "b19405695da070b03baa3e824333f9e7bd1f379517cf2909a655a2e82abd8b3a",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "justfiles/verify.just",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "notes/level4-rollback-discrepancy.md",
+      "byte_length": 3442,
+      "sha256": "beb7651fe30251a0e5f36b7790d1a3911ecbaea11d77b3bde6b6ddfc3b1d599a",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "notes/level4-rollback-discrepancy.md",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "notes/walkthrough.md",
+      "byte_length": 6160,
+      "sha256": "50ca68b1e721981f5c485a4b130269252f977df598875a593d346827cac3de50",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "notes/walkthrough.md",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "requirements.txt",
+      "byte_length": 22,
+      "sha256": "1061b12b9564a72ec95dbe190432d749908d7e66e04a900cf3c0e9234007e49d",
+      "classification": "vendor",
+      "decision": "exclude",
+      "destination_path": null,
+      "cache_path": null,
+      "reason": "byte-identical to upstream requirements.txt at commit 6aab304"
+    },
+    {
+      "source_path": "scripts/new_attempt.py",
+      "byte_length": 4067,
+      "sha256": "dfd71c93dd0c391f24b7a04ef9cff302e70c5bed224ea343ac87c91dbe6e765c",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "scripts/new_attempt.py",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "scripts/scorecard.py",
+      "byte_length": 7818,
+      "sha256": "db313d4725b3eaff3182e10ea70554da2b036be76e0d4c7d84358036e0e6c086",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "scripts/scorecard.py",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "solution/simulation.py",
+      "byte_length": 12400,
+      "sha256": "d9a1b242a68336a0435ee9a67a9df8bc3db513b22f920a8193dd0220ed4d4598",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "solution/simulation.py",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "solution/stages/README.md",
+      "byte_length": 1750,
+      "sha256": "822df0c1454301f7da0eddc4185f88a1993ddf5e909a93d883588a662b40a808",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "solution/stages/README.md",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "solution/stages/__init__.py",
+      "byte_length": 62,
+      "sha256": "5323b8da247ff04d56a853fd7cb6f33534204c8df8f04a9f905851b49f998b89",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "solution/stages/__init__.py",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "solution/stages/level1.py",
+      "byte_length": 998,
+      "sha256": "700fd5286f1a4393cceaaa2697a84052d0063178f88cc724687d1582067365e8",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "solution/stages/level1.py",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "solution/stages/level2.py",
+      "byte_length": 1353,
+      "sha256": "b295aaf430c50eb08d1879ac7c1b005b1b65553b11388e7653cfbfe63e96704f",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "solution/stages/level2.py",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "solution/stages/level3.py",
+      "byte_length": 2884,
+      "sha256": "071e408c27f5ea14a47e0f91aea0487aa195e9877f802f701c43f2326a6f0f80",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "solution/stages/level3.py",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "solution/stages/level4.py",
+      "byte_length": 3587,
+      "sha256": "04f09733b5b38c96910097fa825d8bac9b97f0fa66c6661a7bfdc14e81117503",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "solution/stages/level4.py",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "solution/test_simulation.py",
+      "byte_length": 3495,
+      "sha256": "3bc1451a1c10b5a77624e66a2dc32ea57e14446919b07378941e56fcbfcfa51a",
+      "classification": "vendor",
+      "decision": "exclude",
+      "destination_path": null,
+      "cache_path": null,
+      "reason": "byte-identical to upstream practice_assessments/file_storage/test_simulation.py at commit 6aab304"
+    },
+    {
+      "source_path": "solution/test_spec.py",
+      "byte_length": 9720,
+      "sha256": "7262aa564ee064a84814fe6db64ba0179609d465bcca552ee728aa0bafd58567",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "solution/test_spec.py",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "solution/test_stages.py",
+      "byte_length": 5994,
+      "sha256": "20ada07da5e902fbd9a908a504f0dea2ec2a77e4101030c86f17af2bd7af865c",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "solution/test_stages.py",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "study/README.md",
+      "byte_length": 2853,
+      "sha256": "b6ee9f75fa129a07090177250e95110c306c9ae832c9bffd48406e9c520e8d04",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "study/README.md",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "study/check.py",
+      "byte_length": 3109,
+      "sha256": "eb4303f1446d1c79ceb6e68d988c671e8b872fd327f2de6769a728792861d8d3",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "study/check.py",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "study/level1.py",
+      "byte_length": 962,
+      "sha256": "42d7decbade24a9a5e13820ca4cd73dc67e5c610511679ed8a5b354ebd4576ec",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "study/level1.py",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "study/level2.py",
+      "byte_length": 1317,
+      "sha256": "9f17d27193c6a0e56c21bc35ba74531dd1f7ea613e4c83542d46a0af773824d5",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "study/level2.py",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "study/level3.py",
+      "byte_length": 3123,
+      "sha256": "0e72bccb5254bc784fcb96e63b550a697e72ab41e3c600cc1296f517f19fb8e7",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "study/level3.py",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "study/level4.py",
+      "byte_length": 3666,
+      "sha256": "a111107ae319f1c27505dabc6fcc5f5b7195dc0d7dcf2648fdd0990bf4060eeb",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "study/level4.py",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    },
+    {
+      "source_path": "study/starter.py",
+      "byte_length": 52,
+      "sha256": "f33f5362ff0db98ab5ee906a497608220c8026254c0cbcfdfa6b26e32fdab407",
+      "classification": "user_authored",
+      "decision": "include",
+      "destination_path": "study/starter.py",
+      "cache_path": null,
+      "reason": "proven non-verbatim user-authored simulator, study, notes, scripts, solution, or explore documentation asset"
+    }
+  ],
+  "fetches": [
+    {
+      "upstream_path": "README.md",
+      "repository_path": "Readme.md",
+      "cache_path": "vendor-readme.md",
+      "sha256": "b4c2fbb6810f5969b1cfaea9534369b7a1b1ba40fe759d9951804e727823eca5"
+    },
+    {
+      "upstream_path": "practice_assessments/file_storage/level1.md",
+      "repository_path": "practice_assessments/file_storage/level1.md",
+      "cache_path": "assessment/file_storage/level1.md",
+      "sha256": "0529eb7272952842e50957a3823a063ad1f46c426d236c4f4cdaaba90a247a5b"
+    },
+    {
+      "upstream_path": "practice_assessments/file_storage/level2.md",
+      "repository_path": "practice_assessments/file_storage/level2.md",
+      "cache_path": "assessment/file_storage/level2.md",
+      "sha256": "78a7c6f8fa4078b570af16399f158f30f91f5bc91e51c55171b4580c91f11695"
+    },
+    {
+      "upstream_path": "practice_assessments/file_storage/level3.md",
+      "repository_path": "practice_assessments/file_storage/level3.md",
+      "cache_path": "assessment/file_storage/level3.md",
+      "sha256": "45218db3791433e8f089ef34c1c550205951e971300ca3ecfa08411f2caae7f0"
+    },
+    {
+      "upstream_path": "practice_assessments/file_storage/level4.md",
+      "repository_path": "practice_assessments/file_storage/level4.md",
+      "cache_path": "assessment/file_storage/level4.md",
+      "sha256": "5e1f8bae5e82ea9a61cef9eaae512e9bc6df60a7473bd2ade1b20b1715c59736"
+    },
+    {
+      "upstream_path": "practice_assessments/file_storage/simulation.py",
+      "repository_path": "practice_assessments/file_storage/simulation.py",
+      "cache_path": "assessment/file_storage/simulation.py",
+      "sha256": "3f402921360fc7fc3deb30392425873844268ade3515fb74e0c909f30c809fdc"
+    },
+    {
+      "upstream_path": "practice_assessments/file_storage/test_simulation.py",
+      "repository_path": "practice_assessments/file_storage/test_simulation.py",
+      "cache_path": "assessment/file_storage/test_simulation.py",
+      "sha256": "3bc1451a1c10b5a77624e66a2dc32ea57e14446919b07378941e56fcbfcfa51a"
+    }
+  ],
+  "public_archive": {
+    "note": "Historical provenance snapshot, trimmed for publication. Original summary counts describe the full source inventory; only user-authored and vendor records are retained here. Local environment, metadata, and replaced configuration inventories are omitted. This is not the application runtime manifest.",
+    "omitted_file_records": 981
+  }
+}

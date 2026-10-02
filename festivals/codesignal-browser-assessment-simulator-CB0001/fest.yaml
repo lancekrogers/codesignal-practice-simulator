@@ -1,0 +1,63 @@
+version: "1.0"
+metadata:
+  id: CB0001
+  uuid: 8587b8ab-ec2e-489a-a690-a315ccc18d05
+  name: codesignal-browser-assessment-simulator
+  goal: Extend the existing private CodeSignal practice simulator into a local browser assessment application that closely reproduces the current CodeSignal candidate flow and IDE interaction while preserving FETCH_ONLY provenance, isolated scoring, terminal-agent coaching boundaries, and deterministic offline operation.
+  festival_type: standard
+  created_at: 2026-09-09T08:42:54.486379Z
+  initial_size_bytes: 35192
+  status_history:
+    - status: planning
+      timestamp: 2026-09-09T08:42:54.486379Z
+      path: festivals/planning/codesignal-browser-assessment-simulator-CB0001
+      notes: Festival created
+    - status: ready
+      timestamp: 2026-09-09T03:27:48.946582-06:00
+      path: festivals/ready/codesignal-browser-assessment-simulator-CB0001
+    - status: active
+      timestamp: 2026-09-09T03:28:03.175358-06:00
+      path: festivals/active/codesignal-browser-assessment-simulator-CB0001
+    - status: dungeon/completed
+      timestamp: 2026-09-10T17:20:52.109131-06:00
+      path: festivals/.dungeon/completed/2026-09-10/codesignal-browser-assessment-simulator-CB0001
+project_path: projects/codesignal-practice-simulator
+type_config:
+  auto_phases:
+    - INGEST
+    - PLAN
+  pending_phases:
+    - name: IMPLEMENT
+      type: implementation
+    - name: POLISH
+      type: planning
+quality_gates:
+  enabled: true
+  auto_append: true
+  implementation:
+    - id: testing
+      template: gates/implementation/QUALITY_GATE_TESTING
+      name: Testing and Verification
+      enabled: true
+    - id: review
+      template: gates/implementation/QUALITY_GATE_REVIEW
+      name: Code Review
+      enabled: true
+    - id: iterate
+      template: gates/implementation/QUALITY_GATE_ITERATE
+      name: Review Results and Iterate
+      enabled: true
+    - id: fest-commit
+      template: gates/implementation/QUALITY_GATE_FEST_COMMIT
+      name: Fest Commit Changes
+      enabled: true
+excluded_patterns:
+  - '*_planning'
+  - '*_research'
+  - '*_requirements'
+templates:
+  task_default: tasks/SIMPLE
+  prefer_simple: true
+tracking:
+  enabled: true
+  checksum_file: .festival-checksums.json
