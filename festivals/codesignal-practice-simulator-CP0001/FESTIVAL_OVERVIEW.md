@@ -102,3 +102,9 @@ implementation baseline is Python 3.10+ and the standard library; the
 upstream repository has `licenseInfo: null` and its `/license` endpoint is 404
 at `6aab304`, so the decision is FETCH_ONLY. The full scope and five delivery/review phases are approved, so
 the normal planning approval checkpoint is recorded as satisfied.
+
+<!-- fest:replay:start -->
+## Execution replay
+
+![Festival execution replay](festival-replay.gif)
+<!-- fest:replay:end -->

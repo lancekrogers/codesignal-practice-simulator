@@ -80,6 +80,10 @@ and Monaco editor. The browser and CLI share one server-authoritative attempt
 lifecycle. Verification covered unit and HTTP tests, real Playwright browser
 journeys, offline operation, and installed Python packages.
 
+**Python simulator build — CP0001**
+
+![CP0001 festival replay for the original Python practice simulator build](festivals/codesignal-practice-simulator-CP0001/festival-replay.gif)
+
 **Browser IDE build — CB0001**
 
 ![CB0001 build progress across six phases, finishing at 100% completion](festivals/codesignal-browser-assessment-simulator-CB0001/codesignal-browser-assessment-simulator-CB0001.gif)
