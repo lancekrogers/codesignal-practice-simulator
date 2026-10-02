@@ -16,7 +16,8 @@ workflow on your own project.
 
 Each snapshot retains requirements, plans, task records, review and verification
 evidence, festival configuration, and `.fest` progress data.
-CB0001 and CP0002 also include their build replay GIFs.
+All three festivals include build replay GIFs. CP0001's replay was generated
+from its preserved progress records after the archives were published.
 
 For public sharing, local home and campaign paths use neutral placeholders;
 activity records omit actor usernames and hostnames. Empty lock files and raw
